@@ -361,9 +361,29 @@ function startCoderServerIfDown() {
     .then(res => {
       if (!res.ok) throw new Error(`health ${res.status}`);
     })
-    .catch(() => {
+    .catch(async () => {
       const serverScript = 'C:\\AI_dev\\llama.cpp\\launch-server-8080.ps1';
       if (fs.existsSync(serverScript)) {
+        // A server that is still loading has not bound the port yet, so the
+        // launch script's port guard lets a second one start beside it.
+        // Every app relaunch during a 40 s load was spawning another server.
+        try {
+          const status = await agent.probeLocalEngines(true);
+          if (status.llamaServer.up || status.llamaServer.loading) {
+            console.log('[Strata Code] A llama-server process already exists (loading or up); not starting another.');
+            return;
+          }
+        } catch {}
+        // Ollama may still be holding a 17 GB model from the last run (it
+        // keeps models resident for minutes). Starting a 23 GB coder beside
+        // it oversubscribes the card and wedges the load. Evict first.
+        try {
+          const freed = await agent.releaseOllamaVram();
+          if (freed.length) {
+            console.log(`[Strata Code] Unloaded ${freed.join(', ')} from Ollama before starting the coder server.`);
+            await new Promise(r => setTimeout(r, 2500));
+          }
+        } catch {}
         console.log('[Strata Code] Local llama-server (Port 8080) is offline. Auto-starting...');
         // In its own console window, exactly like run-strata-code.bat did.
         // Spawning the script with stdio:'ignore' gave llama-server no stdout

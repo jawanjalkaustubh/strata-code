@@ -959,10 +959,19 @@ export class AgentEngine {
     const band = classification.band;
     const reasons: string[] = [];
 
-    const words = (prompt || '').trim().split(/\s+/).filter(Boolean).length;
-    const isSingleWordAck = words <= 2 && /^(ok|okay|yes|yep|sure|continue|proceed|go ahead|thanks|thank you)$/i.test((prompt || '').trim());
-    const useArchitect = !isSingleWordAck;
+    const p = (prompt || '').trim();
+    const words = p.split(/\s+/).filter(Boolean).length;
+    const isSingleWordAck = words <= 2 && /^(ok|okay|yes|yep|sure|continue|proceed|go ahead|thanks|thank you|no|nope)$/i.test(p);
+    // A question gets a direct answer, not a blueprint. Sending "does this
+    // hybrid mode work" to the architect produced a prose reply, which the
+    // engine then treated as a failed plan and retried.
+    const editVerb = /\b(fix|implement|add|create|write|refactor|update|change|remove|delete|rename|build|make|generate|design|migrate|convert|replace|move|extract|introduce|set up|setup|install|configure|optimi[sz]e|rework|improve)\b/i.test(p);
+    const isQuestion = (/\?\s*$/.test(p) || /^(does|do|is|are|can|could|should|will|would|what|which|why|how|where|when|who|explain|describe|tell me|summari[sz]e|what's|whats|show me)\b/i.test(p)) && !editVerb;
+    const direct = isSingleWordAck || isQuestion || band === 'trivial';
+    const useArchitect = !direct;
     const tier = userTier;
+    if (isQuestion) reasons.push('question - direct answer, no blueprint');
+    else if (band === 'trivial' && !isSingleWordAck) reasons.push('mechanical task - direct worker');
 
     const head = useArchitect
       ? `${band} task (score ${classification.score}) - Local Dual-Brain Architect (RTX 5090 • $0.00)`
@@ -1680,8 +1689,11 @@ You are the Autonomous Implementation Worker on this NVIDIA RTX 5090 workstation
       // Release VRAM quickly when llama-server also needs the card. Ollama's
       // default (5m) meant a single fallback turn could leave 17 GB pinned long
       // after the turn ended.
+      // 2m (was 5m) when the coder server is absent: long enough to avoid a
+      // reload between turns, short enough that an app relaunch that
+      // auto-starts the coder is not fighting a stale 17 GB tenant.
       keep_alive: this.providerConfig.ollamaKeepAlive
-        || (this.engineStatus?.llamaServer.up ? '30s' : '5m'),
+        || (this.engineStatus?.llamaServer.up ? '30s' : '2m'),
       options: {
         num_ctx: numCtx,
         temperature: taskMode === 'general' ? 0.7 : 0.2,
