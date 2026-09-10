@@ -167,7 +167,7 @@ export class ToolExecutor {
         for (const e of entries) {
           if (found.length >= 3) return;
           if (e.isDirectory()) {
-            if (IGNORED_DIRS.has(e.name) || e.name.startsWith('.')) continue;
+            if (IGNORED_DIRS.has(e.name) || e.name.startsWith('.') || /^(backup|agent-leftovers)/i.test(e.name)) continue;
             walk(path.join(dir, e.name), depth + 1);
           } else if (e.name.toLowerCase() === base) {
             found.push(path.relative(this.workspaceDir, path.join(dir, e.name)).replace(/\\/g, '/'));
@@ -553,14 +553,15 @@ export class ToolExecutor {
         if (truncated || results.length >= maxResults) { truncated = results.length >= maxResults; return; }
         const full = path.join(dir, e.name);
         if (e.isDirectory()) {
-          if (IGNORED_DIRS.has(e.name) || e.name.startsWith('.') || /^backup/i.test(e.name)) continue;
+          if (IGNORED_DIRS.has(e.name) || e.name.startsWith('.') || /^(backup|agent-leftovers)/i.test(e.name)) continue;
           visit(full, depth + 1);
           continue;
         }
         if (!e.isFile()) continue;
         const ext = e.name.split('.').pop()?.toLowerCase() || '';
         if (!SEARCHABLE_EXT.has(ext)) continue;
-        if (/\.(min\.js|min\.css|map)$|package-lock\.json$|\.lock$/i.test(e.name)) continue;
+        // Logs and transcripts match everything and teach the model nothing.
+        if (/\.(min\.js|min\.css|map|log)$|package-lock\.json$|\.lock$|-live-session\.md$|\.bak(-[\w-]+)?$/i.test(e.name)) continue;
         const rel = path.relative(this.workspaceDir, full).replace(/\\/g, '/');
         if (globRe && !globRe.test(rel)) continue;
         let content: string;

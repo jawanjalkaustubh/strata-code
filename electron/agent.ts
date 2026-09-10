@@ -2202,7 +2202,9 @@ WORKING METHOD (follow exactly):
       postDoneCalls: 0,
       postDoneNudged: false,
       inspectCmdStreak: 0,
-      created: new Set<string>()
+      created: new Set<string>(),
+      /** Set once the inspection budget is spent: the next model turn runs with tools disabled so it must answer. */
+      forceAnswer: false
     };
 
     const countTokens = (text: string) => Math.round((text?.length || 0) / 3.5);
@@ -2381,10 +2383,13 @@ WORKING METHOD (follow exactly):
         }
         this.send('agent:token', { token, ...sender });
       };
+      // Once the inspection budget is spent the model gets no tools: it has to
+      // write the answer it has been circling for 40 turns.
+      const useTools = !state.forceAnswer;
       if (this.isPort8080Model(effectiveModel)) {
-        return this.callOpenAICompatible(this.history, effectiveModel, signal, 'openai', taskMode, onTok, true);
+        return this.callOpenAICompatible(this.history, effectiveModel, signal, 'openai', taskMode, onTok, useTools);
       }
-      return this.callOllama(this.history, effectiveModel, signal, taskMode, onTok, true, { think: false });
+      return this.callOllama(this.history, effectiveModel, signal, taskMode, onTok, useTools, { think: false });
     };
 
     // ---- stall escalation ------------------------------------------------
@@ -2512,7 +2517,19 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
       // with a padded rewrite. Replacing a file it has not read this run is
       // refused with instructions; new files and files it has read pass.
       let refused = false;
-      if (advisoryRun && (toolName === 'write_file' || toolName === 'edit_file')) {
+      // Re-read cap. The loop-guard note at read #3 was ignored seven times in
+      // a row; from #4 the read is refused outright.
+      if (toolName === 'read_file') {
+        const rkey = String(toolArgs.path || '').replace(/\\/g, '/').toLowerCase();
+        if (rkey && (state.readCounts.get(rkey) || 0) >= 4) {
+          refused = true;
+          result = {
+            success: false,
+            output: `Refused: ${toolArgs.path} has already been read ${state.readCounts.get(rkey)} times this run and nothing changed in between. Its content is in your context. Use search_codebase for a specific symbol, act on what you have, or write your answer now.`
+          };
+        }
+      }
+      if (!refused && advisoryRun && (toolName === 'write_file' || toolName === 'edit_file')) {
         refused = true;
         result = {
           success: false,
@@ -2852,6 +2869,20 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
               if (outcome === 'halt') break;
             }
 
+            // Inspection budget. A run that has only read and searched for this
+            // many calls, with nothing written, is circling. The next turn runs
+            // without tools so the model has to produce the answer.
+            const inspectionLimit = advisoryRun ? 10 : 18;
+            if (!state.forceAnswer && state.edited.size === 0 && state.toolCalls >= inspectionLimit) {
+              state.forceAnswer = true;
+              this.history.push({
+                role: 'user',
+                content: `[CONTINUATION] Inspection budget reached: ${state.toolCalls} tool calls and no output yet. Tools are disabled for your next reply. Write your answer NOW from what you have already read: concrete findings with file and line references, what is wrong, what to change, in priority order. ${advisoryRun ? 'Do not propose to inspect further.' : 'If a file change is still required, state exactly which edit you would make and why; the user can ask you to apply it.'}`
+              });
+              notice(`⏹ Inspection budget reached (${state.toolCalls} tool calls, nothing produced) — tools off for the next turn so the worker must answer.`);
+              continue;
+            }
+
             // Post-completion guard. Once every edit/run task on the checklist
             // is closed, further tool calls are exploration, not work. Nudge
             // once, then end the run with an engine summary rather than let
@@ -2922,8 +2953,10 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
     if (isHybrid && hybridPlan && !hybridPlan.useArchitect) {
       collab({
         stage: 'executing',
-        title: 'Direct Worker Execution — Mechanical Task',
-        message: `${hybridPlan.reason}. Running entirely on the RTX 5090 ($0.00 cost). Will escalate automatically if the worker stalls.`
+        title: advisoryRun
+          ? 'Direct Worker — Analysis Request (answer in chat, no file changes)'
+          : /question/.test(hybridPlan.reason) ? 'Direct Worker — Question' : 'Direct Worker Execution — Mechanical Task',
+        message: `${hybridPlan.reason}. Running entirely on the RTX 5090 ($0.00 cost).`
       });
       activeProvider = 'ollama';
     } else if (isHybrid) {
@@ -3248,12 +3281,17 @@ Say REVISE only for a real defect visible in the evidence: a failed verification
           });
         }
       } else {
+        const directRun = hybridPlan?.useArchitect === false;
         collab({
           stage: 'verified',
-          title: didWork ? `Task Completed (${hybridTier.toUpperCase()})` : 'Response Complete',
-          message: didWork
-            ? 'Local RTX 5090 worker delivered the solution based on the architect directive.'
-            : 'Answered directly by the local worker on RTX 5090 (no edits, so no review round).'
+          title: directRun
+            ? (advisoryRun ? 'Analysis Delivered' : 'Response Complete')
+            : didWork ? `Task Completed (${hybridTier.toUpperCase()})` : 'Response Complete',
+          message: directRun
+            ? `Answered directly by the local worker on RTX 5090 (${state.toolCalls} inspection call(s), ${state.edited.size} file(s) changed).`
+            : didWork
+              ? 'Local RTX 5090 worker delivered the solution based on the architect directive.'
+              : 'Answered directly by the local worker on RTX 5090 (no edits, so no review round).'
         });
       }
     } else if (!isHybrid && !signal.aborted && localTokensAccumulated > 0) {

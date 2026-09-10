@@ -417,3 +417,18 @@ Transcript: *"Inspect the workspace files and suggest code improvements"*, coder
 - **The architect looped.** Planning without tools, the coder wrote a fake `python` tool call and re-emitted the whole blueprint seven times. `callArchitectStreaming` now aborts the generation at the first repeated `## Goal` or the first fake tool call after the task list and keeps the first copy; planning/review calls are capped at 3,072 tokens.
 
 Left untouched in the workspace, created by earlier agent runs tonight and not part of this work: `IMPLEMENTATION_PLAN.md`, `IMPROVEMENT_SUGGESTIONS.md`, `src/components/CodeEditorImproved.tsx`, `src/components/FileTreeImproved.tsx`, `src/utils/`.
+
+### Round 5 — advisory runs that never answer (applied 2026-09-10)
+
+Transcript: the same "inspect and suggest" prompt in the new advisory mode. The edit refusal held (nothing was modified), but the worker read and searched for 46 turns until the 120K budget was gone and never wrote its findings; the read-loop note at read #3 was ignored seven times over on one file.
+
+| Fix | Detail |
+|---|---|
+| Inspection budget | After 10 tool calls in an advisory run (18 otherwise) with nothing written, the engine posts "write your answer now" and runs the next model turn **with tools disabled**, so the answer has to come. |
+| Re-read cap | A fourth `read_file` of the same unchanged file is refused, not annotated. |
+| Search hygiene | `search_codebase`, retrieval and the path suggester skip `*-live-session.md`, `*.log`, `*.bak*`, `backup-*/` and `agent-leftovers-*/`. The 439 KB session transcript in the workspace root had been matching every query. |
+| Labels | Direct runs are titled by their kind (analysis / question / mechanical) and no longer claim an "architect directive". |
+
+Replay on the fixture with the coder resident: direct mode, 10 inspection calls, budget tripped, tools-off turn produced six concrete file:line findings (the planted `average()` divisor bug first), 8 s total, zero edits.
+
+Note for the user: the app's workspace is `D:\AntiGravity`, which contains the `local-code-studio` mirror, so every search sees two copies of the project. Opening `D:\AntiGravity\strata` as the workspace halves the noise.

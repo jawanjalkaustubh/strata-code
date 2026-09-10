@@ -57,7 +57,7 @@ const TEXT_EXT = new Set([
   'hpp', 'cc', 'env', 'lua', 'rb', 'php'
 ]);
 
-const SKIP_FILE = /(^package-lock\.json$|\.lock$|\.min\.(js|css)$|\.map$|-lock\.ya?ml$|^bun\.lockb$)/i;
+const SKIP_FILE = /(^package-lock\.json$|\.lock$|\.min\.(js|css)$|\.map$|-lock\.ya?ml$|^bun\.lockb$|-live-session\.md$|\.log$|\.bak(-[\w-]+)?$)/i;
 
 const STOPWORDS = new Set([
   'the', 'and', 'for', 'with', 'this', 'that', 'these', 'those', 'file', 'files', 'code', 'make',
@@ -321,7 +321,7 @@ export async function listSourceFiles(workspaceDir: string, maxFiles = 700, maxD
       for (const e of entries) {
         if (out.length >= maxFiles) break;
         if (e.isDirectory()) {
-          if (IGNORE_DIRS.has(e.name) || e.name.startsWith('.') || /^backup/i.test(e.name)) continue;
+          if (IGNORE_DIRS.has(e.name) || e.name.startsWith('.') || /^(backup|agent-leftovers)/i.test(e.name)) continue;
           if (depth + 1 <= maxDepth) next.push({ dir: path.join(dir, e.name), depth: depth + 1 });
           continue;
         }
