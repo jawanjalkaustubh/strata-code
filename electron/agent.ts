@@ -1963,7 +1963,8 @@ WORKING METHOD (follow exactly):
 - Locate before reading: use search_codebase to find the symbol/string, then read_file with startLine/lineCount for just that region. Do not read whole large files.
 - Edit surgically: edit_file with a short, unique targetContent copied verbatim from read_file output WITHOUT the "NN: " line-number prefixes. The result shows the edited region; do not re-read to confirm.
 - Never describe an action instead of taking it. If the next step is a tool call, make the call in this turn.
-- Inspection is preparation, not the result. If the request asks for a design, architecture, plan, proposal or document, write it to a file with write_file (e.g. docs/<topic>.md); reading files and summarizing them does not complete such a request.
+- Inspection is preparation, not the result. If the request asks for a design, architecture, plan, proposal or document, write it to a NEW file with write_file (e.g. docs/<topic>.md); reading files and summarizing them does not complete such a request. Never overwrite existing files the user did not name.
+- When the work is done, stop. Do not run more listing or inspection commands after the deliverable exists; reply "DONE:".
 - ${verifyHint} Fix anything it reports before declaring completion.
 - When the whole request is done, reply "DONE:" followed by a short summary of the files changed and how they were verified.`;
 
@@ -2163,7 +2164,12 @@ WORKING METHOD (follow exactly):
       reviewRounds: 0,
       consecutiveRepeat: 0,
       lastToolSig: '',
-      currentBubble: ''
+      currentBubble: '',
+      /** Tool calls made after every edit/run task was already closed. */
+      postDoneCalls: 0,
+      postDoneNudged: false,
+      inspectCmdStreak: 0,
+      created: new Set<string>()
     };
 
     const countTokens = (text: string) => Math.round((text?.length || 0) / 3.5);
@@ -2442,7 +2448,32 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
       this.send('agent:status', { state: 'executing' });
       let result: { success: boolean; output: string; diff?: EditRecord } = { success: false, output: 'Unknown tool' };
 
+      // Overwrite guard. A local model given "update the docs" will happily
+      // write_file a 191-line file it has only skimmed, replacing real content
+      // with a padded rewrite. Replacing a file it has not read this run is
+      // refused with instructions; new files and files it has read pass.
+      let refused = false;
+      if (toolName === 'write_file') {
+        const wkey = String(toolArgs.path || '').replace(/\\/g, '/').toLowerCase();
+        try {
+          const resolved = this.tools.resolvePath(toolArgs.path || '');
+          if (wkey && fs.existsSync(resolved) && !state.readCounts.has(wkey) && !state.edited.has(wkey) && !state.created.has(wkey)) {
+            const existingLines = fs.readFileSync(resolved, 'utf-8').split('\n').length;
+            if (existingLines > 30) {
+              refused = true;
+              result = {
+                success: false,
+                output: `Refusing to overwrite ${toolArgs.path} (${existingLines} lines): you have not read it in this run, so this write would replace content you have not seen. If the user asked you to change this file, read_file it first and then use edit_file for the specific change (or write_file after reading, if a full rewrite is really intended). If you meant to create a new document, choose a new path such as docs/<topic>.md.`
+              };
+            }
+          }
+        } catch {
+          // Path outside the roots: the tool itself reports that.
+        }
+      }
+
       try {
+        if (refused) throw null;
         switch (toolName) {
           case 'search_codebase':
             result = await this.tools.searchCodebase(toolArgs.query || '', {
@@ -2474,13 +2505,29 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
             result = { success: false, output: `Unsupported tool: ${toolName}. Available: search_codebase, read_file, edit_file, write_file, list_files, run_command.` };
         }
       } catch (toolExecErr: any) {
-        result = { success: false, output: `Tool execution error: ${toolExecErr.message || String(toolExecErr)}` };
+        if (toolExecErr !== null) {
+          result = { success: false, output: `Tool execution error: ${toolExecErr.message || String(toolExecErr)}` };
+        }
       }
 
       // ---- loop guards & bookkeeping ------------------------------------
       const target = String(toolArgs.path || toolArgs.dirPath || '');
       const targetKey = target.replace(/\\/g, '/').toLowerCase();
       let guardNote = '';
+      if (toolName === 'write_file' && result.success && targetKey) state.created.add(targetKey);
+
+      // Inspection-command streak: twenty recursive directory listings in a
+      // row is how a finished run burned its whole token budget.
+      if (toolName === 'run_command') {
+        const cmd = String(toolArgs.command || '').trim();
+        const isInspection = /^\s*(get-childitem|gci|ls|dir|cat|type|get-content|gc|find|findstr|select-string|tree|wc|head|tail|measure-object|get-item|test-path)\b/i.test(cmd);
+        state.inspectCmdStreak = isInspection ? state.inspectCmdStreak + 1 : 0;
+        if (isInspection && state.inspectCmdStreak >= 3) {
+          guardNote += `\n\n[Loop guard] That is ${state.inspectCmdStreak} inspection commands in a row. Listing and printing files through run_command is expensive; use search_codebase / list_files / read_file with a line range instead - or, if the deliverable already exists, stop and reply "DONE:".`;
+        }
+      } else if (toolName === 'edit_file' || toolName === 'write_file') {
+        state.inspectCmdStreak = 0;
+      }
       if (toolName === 'read_file' && result.success && targetKey) {
         const n = (state.readCounts.get(targetKey) || 0) + 1;
         state.readCounts.set(targetKey, n);
@@ -2738,6 +2785,35 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
               const outcome = await executeToolCall(call, effectiveModel);
               if (outcome === 'halt') break;
             }
+
+            // Post-completion guard. Once every edit/run task on the checklist
+            // is closed, further tool calls are exploration, not work. Nudge
+            // once, then end the run with an engine summary rather than let
+            // the worker list node_modules until the token budget is gone.
+            if (state.plan) {
+              const openWork = state.plan.tasks.filter(t => t.status !== 'done' && (t.kind === 'edit' || t.kind === 'run'));
+              if (openWork.length === 0) {
+                state.postDoneCalls += toolCalls.length;
+                if (state.postDoneCalls >= 10) {
+                  const files = [...state.edited.values()].map(e => e.path);
+                  const summary = `DONE (engine summary): every checklist task is complete but the worker kept exploring, so the run was ended here. Files changed: ${files.length ? files.join(', ') : 'none'}.`;
+                  ensureWorkerBubble(effectiveModel);
+                  this.send('agent:token', { token: `\n\n${summary}`, ...workerSender(effectiveModel) });
+                  this.history.push({ role: 'assistant', content: summary });
+                  notice(`⏹ Ended the worker loop: all checklist tasks were complete ${state.postDoneCalls} tool calls ago.`);
+                  looping = false;
+                  break;
+                }
+                if (state.postDoneCalls >= 4 && !state.postDoneNudged) {
+                  state.postDoneNudged = true;
+                  this.history.push({
+                    role: 'user',
+                    content: `[CONTINUATION] Every checklist task is complete. Stop exploring the workspace - do not run more listing or inspection commands. Reply now with "DONE:" followed by the files you changed and how they were verified.`
+                  });
+                  notice(`↻ All checklist tasks are complete but the worker is still exploring — asking it to wrap up.`);
+                }
+              }
+            }
             continue;
           }
 
@@ -2811,7 +2887,7 @@ Respond in EXACTLY this markdown structure and nothing else:
 ## Risks
 - <one line each; omit the section if none>
 
-Rules: ${taskBudget}. Every edit task names its file(s). If the WORKSPACE CONTEXT already pins down the exact lines, the first task is the edit itself - do not add a "read the file" task. Prefer edit_file over rewriting files. If the request asks for a design, architecture, plan, proposal or document, the deliverable is a FILE the worker must create with write_file (e.g. docs/<topic>.md) - make that an explicit task with the path; inspection alone never completes such a request, and do NOT add implementation tasks the user did not ask for (a design request is done when the document is written). You have no tools: never write "let me inspect" - plan from the facts above. No prose outside the sections, no code blocks except commands.`;
+Rules: ${taskBudget}. Every edit task names its file(s). If the WORKSPACE CONTEXT already pins down the exact lines, the first task is the edit itself - do not add a "read the file" task. Prefer edit_file over rewriting files. If the request asks for a design, architecture, plan, proposal or document, the deliverable is ONE NEW file the worker creates with write_file (e.g. docs/<topic>.md) - make that an explicit task with the path; inspection alone never completes such a request, and do NOT add implementation tasks the user did not ask for (a design request is done when the document is written). NEVER plan to overwrite or "update" existing documentation or source files the user did not name - existing docs are reference material, not the deliverable. Verify a document with a line count (e.g. \`(Get-Content docs/x.md).Count\`), never by printing it. You have no tools: never write "let me inspect" - plan from the facts above. No prose outside the sections, no code blocks except commands.`;
 
         // Read the workspace BEFORE planning, locally and for free.
         const grounding = await this.buildWorkspaceGrounding(editorContext, { profile: projectProfile, retrievalBlock });
@@ -2896,7 +2972,7 @@ Rules: ${taskBudget}. Every edit task names its file(s). If the WORKSPACE CONTEX
 
         this.history.push({
           role: 'user',
-          content: `[LEAD ARCHITECT DIRECTIVE — Brain 1 (${planRes.modelUsed})]\n${planContent}\n\n[ENGINE CHECKLIST]\n${checklist}\n\n[WORKER EXECUTION RULES]\n1. Start with task 1 immediately by calling a tool. Do not restate, summarize, or thank.\n2. Use search_codebase before reading whole files; read only the ranges you need. Inspection is preparation, not the deliverable - after at most 3-4 inspection calls, produce the output.\n3. If a task says write a document or file, create it with write_file - a design or plan is only done when the file exists on disk.\n4. After edits, the engine's verification gate runs the verify command(s) and reports failures to you - fix them.\n5. When every task is done, reply "DONE:" with the files changed and how they were verified.`
+          content: `[LEAD ARCHITECT DIRECTIVE — Brain 1 (${planRes.modelUsed})]\n${planContent}\n\n[ENGINE CHECKLIST]\n${checklist}\n\n[WORKER EXECUTION RULES]\n1. Start with task 1 immediately by calling a tool. Do not restate, summarize, or thank.\n2. Use search_codebase before reading whole files; read only the ranges you need. Inspection is preparation, not the deliverable - after at most 3-4 inspection calls, produce the output.\n3. If a task says write a document or file, create it with write_file - a design or plan is only done when the file exists on disk. Never overwrite an existing file the user did not name; write_file will refuse to replace a file you have not read this run.\n4. After edits, the engine's verification gate runs the verify command(s) and reports failures to you - fix them. Do not print whole files (cat / Get-Content) to verify; use a line count.\n5. When every task is done, STOP and reply "DONE:" with the files changed and how they were verified. Do not keep exploring the workspace after the checklist is complete.`
         });
 
         collab({

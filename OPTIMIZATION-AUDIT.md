@@ -396,3 +396,15 @@ Same prompt, fixture workspace. Arbiter notice: *"Routed to the already-loaded Q
 | Review | `VERDICT: APPROVE`, 6 changed files, 1 verification round |
 
 The architect over-scoped a *design* request into implementation modules (config, services, logger). The protocol now says a design request is complete when the document is written and not to add unrequested implementation tasks. Arbiter notices are de-duplicated ignoring the GB figures, which had made the same decision print once per phase.
+
+### Round 3 from the user's transcript (design request against the real workspace)
+
+The engine mechanics held (structured 5-task plan, tasks auto-closed on writes, evidence review, budget stop), but three defects showed:
+
+| Problem | Fix |
+|---|---|
+| The architect planned to **rewrite five existing project docs** and the worker overwrote them (`ARCHITECTURE.md`, `UI-REDESIGN-PLAN.md`, `PROJECT_OVERVIEW.md`, `PERFORMANCE_IMPLEMENTATION_PLAN.md`, setup guide). Restored from git. | Protocol: a document request yields ONE NEW file; never plan to overwrite files the user did not name. Engine: `write_file` refuses to replace an existing file of more than 30 lines that was not read in this run (new files and files read this run pass). |
+| After all five tasks closed, the worker ran ~20 recursive directory listings until the 120K budget was gone. | Post-completion guard: once every edit/run task is closed, 4 more tool calls trigger a wrap-up instruction and 10 end the run with an engine summary. Inspection-command streaks (3+ `Get-ChildItem`/`cat`/… in a row) get a loop-guard note; verification of documents is a line count, not `cat`. |
+| The blueprint was emitted twice (model repetition). | `dedupeRepeatedBlueprint` keeps the first copy before parsing. |
+
+Both roles ran on Qwen3-Coder in that run: the task-mode toggle was General (worker = general model by design) and the coder server was resident, so the arbiter routed both roles to it. With the 30 GB card, the two-model split only exists when the coder server is down and both models live in Ollama (swapped per phase).

@@ -120,8 +120,24 @@ export function synthesizePlan(prompt: string, verifyCommand?: string): TaskPlan
   return { goal: 'Complete the requested change', tasks, verify: verifyCommand ? [verifyCommand] : [], risks: [], raw: '', synthesized: true };
 }
 
+/**
+ * A coder model told to answer "in EXACTLY this structure and nothing else"
+ * sometimes emits the whole blueprint twice. Keep the first copy.
+ */
+export function dedupeRepeatedBlueprint(md: string): string {
+  const text = (md || '').replace(/\r\n/g, '\n');
+  const marks = [...text.matchAll(/^#{1,3}\s*(goal|tasks)\b/gim)].map(m => ({ name: m[1].toLowerCase(), index: m.index || 0 }));
+  const goals = marks.filter(m => m.name === 'goal');
+  if (goals.length >= 2) return text.slice(0, goals[1].index).trimEnd();
+  const tasksMarks = marks.filter(m => m.name === 'tasks');
+  if (tasksMarks.length >= 2) return text.slice(0, tasksMarks[1].index).trimEnd();
+  const half = Math.floor(text.length / 2);
+  if (text.length > 200 && text.slice(0, half).trim() === text.slice(half).trim()) return text.slice(0, half).trimEnd();
+  return text;
+}
+
 export function parseBlueprint(md: string, maxTasks = 12, opts: { prompt?: string; verifyCommand?: string } = {}): TaskPlan {
-  const raw = (md || '').replace(/\r\n/g, '\n');
+  const raw = dedupeRepeatedBlueprint(md);
 
   const goalBody = sectionBody(raw, ['goal', 'objective', 'summary']);
   let goal = '';
