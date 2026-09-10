@@ -356,3 +356,43 @@ Reported after the Part 7 build: *"the app doesn't open, it's hanged"*, then *"i
 | In-app coder auto-start never produced a server | The script was spawned with `stdio: 'ignore'`; llama-server logs to stdout and exited immediately on Windows without one. The launcher's visible console window is why *its* start worked. | Spawned via `cmd /c start "Llama Server - Port 8080" powershell ...` - its own console window, same as the launcher. |
 
 Verified: window visible 1.6 s after launch, all four Electron processes responding, zero renderer console errors on the production bundle, coder server auto-started after the UI loaded.
+
+---
+
+## Part 9 — Architect that narrates instead of planning; a loading coder server is "resident" (applied 2026-09-10)
+
+### What the user's transcript showed
+
+Prompt: *"Help me design an architecture for a modular local desktop application"* in hybrid mode with the coder server just started.
+
+1. The architect (configured as `local`, resolved to the coder model) answered **"Let me inspect the key existing files to understand the current architecture before designing a modular one."** - it has no tools, so that is the whole blueprint. The parser found no task list and synthesized the generic *"implement the requested change"* checklist.
+2. The worker made ten inspection calls (reads, listings, searches) and stopped without writing anything. For a design request the deliverable is a document, and nothing had told it so.
+3. The review correctly returned `VERDICT: REVISE` with concrete next steps. The revision round then ended **three seconds later** with "✅ Revision round complete": the worker answered in text, and the continuation nudges were suppressed because their de-duplication keys were still set from the first pass.
+4. The transcript labelled the architect **"(local)"** - the configured id, not the model that answered.
+5. Underneath all of it: llama-server had been started by the app and was still loading when the run began. The arbiter probed `/props`, got no answer, concluded nothing was resident, and let the architect turn load `qwen3.8:27b` (17 GB) through Ollama. The coder server then could not get onto the card, spilled ~10 GB into system RAM, and sat wedged for twelve minutes. **That is the freeze.**
+
+### Fixes
+
+| Problem | Change |
+|---|---|
+| Narrated blueprint | `parseBlueprint` accepts plain `-` bullets inside a Tasks section; when it still finds no tasks the engine **retries the architect once** with a firm "you have no tools, plan from the facts you have" message; the tier protocol says so up front. |
+| Generic fallback | `synthesizePlan()` is request-aware: a design/plan/spec/document request yields *survey (≤3 calls) → write `docs/<slug>.md` with write_file → DONE*, with the file named so the checklist can hold the worker to it. The synthesized checklist is shown in the transcript. |
+| Inspection-only worker | Worker rules and the system prompt now state that inspection is preparation, not the result, and that a document request is complete only when the file exists. |
+| Dead revision round | Nudge keys/counters reset when the revision round starts; the directive says a text-only reply counts as no progress; the sign-off says **"Revision round ended without any tool calls"** when that happens instead of a green tick. |
+| "(local)" label | Headers are built from the model that actually answered. |
+| Loading server treated as absent | `probeLocalEngines` marks `llamaServer.loading` when the process exists but `/props` does not answer. The arbiter then **waits up to 90 s** for it instead of loading anything else, routes Ollama-bound turns to it once up, and the pre-flight guard evicts Ollama in the loading case too. A server still silent after 90 s produces a clear error naming `stop-server-8080.bat`. |
+
+Recovery performed on the machine during this session: evicted `qwen3.8:27b` from Ollama (GPU fell from 21.7 GB to 2.4 GB, proving the coder never got on the card), the wedged server then exited by itself, and it was relaunched in a console window.
+
+### Replay of the user's request after the fixes (coder server resident, both brains routed to it)
+
+Same prompt, fixture workspace. Arbiter notice: *"Routed to the already-loaded Qwen3-Coder-30B-A3B-Instruct instead of qwen3.8:27b (needs ~18.4 GB, only 2.1 GB free)."* Ollama stayed empty for the whole run.
+
+| Phase | Result |
+|---|---|
+| Blueprint | 5 structured tasks on the first attempt; task 1 = *"Create a comprehensive architecture design document — docs/architecture.md"*. No retry needed. |
+| Worker | `list_files`, two reads, then `write_file docs/architecture.md` (98 lines) → task 1 closed; then implemented the remaining tasks, ran `npm run typecheck`, fixed the errors it reported (installed `@types/node`, corrected two edits), typecheck clean. |
+| Continuation | one nudge for the open task; the worker accounted for it |
+| Review | `VERDICT: APPROVE`, 6 changed files, 1 verification round |
+
+The architect over-scoped a *design* request into implementation modules (config, services, logger). The protocol now says a design request is complete when the document is written and not to add unrequested implementation tasks. Arbiter notices are de-duplicated ignoring the GB figures, which had made the same decision print once per phase.

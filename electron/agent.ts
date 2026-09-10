@@ -102,7 +102,8 @@ export interface HybridPlan {
 /** What is actually resident on the GPU right now. */
 export interface LocalEngineStatus {
   checkedAt: number;
-  llamaServer: { up: boolean; alias?: string; nCtx?: number };
+  /** `loading`: the llama-server process exists but is not answering yet - it is already holding VRAM. */
+  llamaServer: { up: boolean; loading?: boolean; alias?: string; nCtx?: number };
   ollamaLoaded: { name: string; vramBytes: number }[];
   gpu?: { totalMiB: number; usedMiB: number; freeMiB: number };
 }
@@ -547,11 +548,20 @@ export class AgentEngine {
         ollamaLoaded: []
       };
 
-      const [props, ps, gpu] = await Promise.all([
+      const [props, ps, gpu, serverProcess] = await Promise.all([
         this.fetchJson(`${this.localServerBase}/props`, 1500, { Authorization: `Bearer ${this.localApiKey()}` }),
         this.fetchJson('http://127.0.0.1:11434/api/ps'),
-        this.readGpuMemory()
+        this.readGpuMemory(),
+        this.llamaServerProcessExists()
       ]);
+
+      // A llama-server that is still loading its model does not answer /props,
+      // but it already owns most of the card. Treating "not answering" as
+      // "nothing resident" is how a 27B Ollama model got loaded on top of a
+      // half-loaded 23 GB coder and froze the desktop.
+      if (!props && serverProcess) {
+        status.llamaServer.loading = true;
+      }
 
       if (props) {
         status.llamaServer.up = true;
@@ -583,6 +593,33 @@ export class AgentEngine {
     } finally {
       this.engineProbeInFlight = null;
     }
+  }
+
+  /** True when a llama-server process is running on this machine (answering or not). */
+  private llamaServerProcessExists(): Promise<boolean> {
+    if (process.platform !== 'win32') return Promise.resolve(false);
+    return new Promise((resolve) => {
+      try {
+        execFile('tasklist', ['/FI', 'IMAGENAME eq llama-server.exe', '/NH'], { timeout: 2500, windowsHide: true }, (err: any, stdout: any) => {
+          resolve(!err && /llama-server\.exe/i.test(String(stdout || '')));
+        });
+      } catch {
+        resolve(false);
+      }
+    });
+  }
+
+  /** Polls /props until the coder server answers or the deadline passes. Returns true when it is up. */
+  async waitForLlamaServer(maxMs: number, onTick?: (elapsedMs: number) => void): Promise<boolean> {
+    const started = Date.now();
+    while (Date.now() - started < maxMs) {
+      const status = await this.probeLocalEngines(true);
+      if (status.llamaServer.up) return true;
+      if (!status.llamaServer.loading) return false; // process gone - it died or was never there
+      if (onTick) onTick(Date.now() - started);
+      await new Promise(r => setTimeout(r, 3000));
+    }
+    return false;
   }
 
   /** Approximate VRAM an Ollama model needs, from its on-disk size plus KV/compute overhead. */
@@ -634,8 +671,25 @@ export class AgentEngine {
   async resolveLocalWorker(preferredModel: string): Promise<{ model: string; notice?: string }> {
     if (this.providerConfig.disableVramArbiter) return { model: preferredModel };
 
-    const status = await this.probeLocalEngines();
+    let status = await this.probeLocalEngines();
     const wantsServer = this.isPort8080Model(preferredModel);
+
+    // Case 0: the coder server is mid-load. It owns the card already; the only
+    // safe move is to wait for it - never to load anything else beside it.
+    if (!status.llamaServer.up && status.llamaServer.loading) {
+      const cameUp = await this.waitForLlamaServer(90000);
+      status = await this.probeLocalEngines(true);
+      if (!cameUp && !status.llamaServer.up) {
+        throw new Error('The llama-server on port 8080 has been loading for over 90 seconds and is still not answering. It may be stuck (VRAM spilled into system RAM). Stop it with C:\\AI_dev\\llama.cpp\\stop-server-8080.bat and start it again, then retry.');
+      }
+      const serverModel = status.llamaServer.alias || 'Qwen3-Coder-30B-A3B-Instruct';
+      if (!wantsServer) {
+        return {
+          model: serverModel,
+          notice: `The coder server was still loading when this turn started, so the turn waited for it and is using **${serverModel}** instead of loading **${preferredModel}** beside it.`
+        };
+      }
+    }
 
     // Case A: the request already targets llama-server.
     if (wantsServer) {
@@ -1909,6 +1963,7 @@ WORKING METHOD (follow exactly):
 - Locate before reading: use search_codebase to find the symbol/string, then read_file with startLine/lineCount for just that region. Do not read whole large files.
 - Edit surgically: edit_file with a short, unique targetContent copied verbatim from read_file output WITHOUT the "NN: " line-number prefixes. The result shows the edited region; do not re-read to confirm.
 - Never describe an action instead of taking it. If the next step is a tool call, make the call in this turn.
+- Inspection is preparation, not the result. If the request asks for a design, architecture, plan, proposal or document, write it to a file with write_file (e.g. docs/<topic>.md); reading files and summarizing them does not complete such a request.
 - ${verifyHint} Fix anything it reports before declaring completion.
 - When the whole request is done, reply "DONE:" followed by a short summary of the files changed and how they were verified.`;
 
@@ -2141,8 +2196,11 @@ WORKING METHOD (follow exactly):
     // produce the same bubble 20 times in one run.
     let lastArbiterNotice = '';
     const arbiterNotice = (text: string) => {
-      if (text === lastArbiterNotice) return;
-      lastArbiterNotice = text;
+      // Compare without the free/needed GB figures, which drift by a few
+      // hundred MB between phases and made the same decision print twice.
+      const key = text.replace(/\d+(\.\d+)?\s*GB/g, 'N GB');
+      if (key === lastArbiterNotice) return;
+      lastArbiterNotice = key;
       notice(`🎛️ VRAM Arbiter: ${text}`);
     };
 
@@ -2159,13 +2217,13 @@ WORKING METHOD (follow exactly):
       try {
         const status = await this.probeLocalEngines(true);
         const ollamaMiB = status.ollamaLoaded.reduce((a, m) => a + m.vramBytes, 0) / (1024 * 1024);
-        if (status.llamaServer.up && ollamaMiB > 512) {
+        if ((status.llamaServer.up || status.llamaServer.loading) && ollamaMiB > 512) {
           const freeMiB = status.gpu?.freeMiB;
           const dangerous = ollamaMiB > 8192 || (typeof freeMiB === 'number' && freeMiB < 3072);
           if (dangerous) {
             const names = status.ollamaLoaded.map(m => m.name).join(', ');
             const freed = await this.releaseOllamaVram();
-            notice(`🧯 VRAM guard: llama-server (${status.llamaServer.alias || 'coder model'}) and Ollama (${names}) were both resident on the GPU — that is the configuration that freezes the desktop (VRAM spilling into system RAM). ${freed.length ? `Unloaded ${freed.join(', ')} from Ollama before starting.` : 'Could not unload Ollama automatically; stop one of them manually.'}`);
+            notice(`🧯 VRAM guard: llama-server (${status.llamaServer.alias || (status.llamaServer.loading ? 'still loading' : 'coder model')}) and Ollama (${names}) were both resident on the GPU — that is the configuration that freezes the desktop (VRAM spilling into system RAM). ${freed.length ? `Unloaded ${freed.join(', ')} from Ollama before starting.` : 'Could not unload Ollama automatically; stop one of them manually.'}`);
           }
         }
       } catch {
@@ -2199,7 +2257,7 @@ WORKING METHOD (follow exactly):
       messages: AgentMessage[],
       modelId: string,
       addressedTo: string,
-      header: string,
+      headerFor: string | ((modelUsed: string) => string),
       opts: { think?: boolean } = {}
     ): Promise<{ content: string; modelUsed: string }> => {
       let target = (modelId && modelId !== 'local') ? modelId : this.localArchitectModel(workerModel);
@@ -2214,6 +2272,9 @@ WORKING METHOD (follow exactly):
       } catch {}
 
       const sender = architectSender(target, addressedTo);
+      // Headers name the model that actually answered, not the configured id
+      // ('local' was showing up in the transcript as the architect's name).
+      const header = typeof headerFor === 'function' ? headerFor(target) : headerFor;
       let started = false;
       const start = () => {
         if (started) return;
@@ -2750,7 +2811,7 @@ Respond in EXACTLY this markdown structure and nothing else:
 ## Risks
 - <one line each; omit the section if none>
 
-Rules: ${taskBudget}. Every edit task names its file(s). If the WORKSPACE CONTEXT already pins down the exact lines, the first task is the edit itself - do not add a "read the file" task. Prefer edit_file over rewriting files. No prose outside the sections, no code blocks except commands.`;
+Rules: ${taskBudget}. Every edit task names its file(s). If the WORKSPACE CONTEXT already pins down the exact lines, the first task is the edit itself - do not add a "read the file" task. Prefer edit_file over rewriting files. If the request asks for a design, architecture, plan, proposal or document, the deliverable is a FILE the worker must create with write_file (e.g. docs/<topic>.md) - make that an explicit task with the path; inspection alone never completes such a request, and do NOT add implementation tasks the user did not ask for (a design request is done when the document is written). You have no tools: never write "let me inspect" - plan from the facts above. No prose outside the sections, no code blocks except commands.`;
 
         // Read the workspace BEFORE planning, locally and for free.
         const grounding = await this.buildWorkspaceGrounding(editorContext, { profile: projectProfile, retrievalBlock });
@@ -2773,7 +2834,8 @@ Rules: ${taskBudget}. Every edit task names its file(s). If the WORKSPACE CONTEX
         ];
 
         const tierTag = hybridTier === 'low' ? ' • LOW' : hybridTier === 'high' ? ' • HIGH' : ' • MED';
-        const blueprintHeader = `### 🧠 Local Architect (Brain 1 • ${architectModel}${tierTag}) ➔ @Local Coder Worker\n\n`;
+        const blueprintHeader = (m: string) => `### 🧠 Local Architect (Brain 1 • ${m}${tierTag}) ➔ @Local Coder Worker\n\n`;
+        const planOpts = { prompt, verifyCommand: projectProfile.verifyCommands[0] };
         const planRes = await callArchitectStreaming(
           planMessages,
           architectModel,
@@ -2781,26 +2843,60 @@ Rules: ${taskBudget}. Every edit task names its file(s). If the WORKSPACE CONTEX
           blueprintHeader,
           { think: architectShouldThink('plan') }
         );
+        if (architectModel === 'local') architectModel = planRes.modelUsed;
         let planContent = planRes.content.trim();
         localTokensAccumulated += countTokens(planContent);
+        let plan = parseBlueprint(planContent, 12, planOpts);
 
-        if (!planContent || planContent.length < 30) {
-          planContent = hybridTier === 'low'
-            ? `## Goal\nComplete the user's request.\n## Tasks\n1. Locate the relevant code with search_codebase — done when: the file and lines are identified\n2. Implement the change with edit_file — done when: the edit is applied\n3. Verify the change — done when: ${projectProfile.verifyCommands[0] ? `\`${projectProfile.verifyCommands[0]}\` passes` : 'the edited region reads correctly'}`
-            : `## Goal\nComplete the user's request in "${this.workspaceDir}".\n## Tasks\n1. Locate the relevant code with search_codebase and read_file(startLine, lineCount) — done when: the exact lines to change are identified\n2. Implement the change with edit_file (or write_file for new files) — done when: the edit is applied and the result region is correct\n3. Verify the change — done when: ${projectProfile.verifyCommands[0] ? `\`${projectProfile.verifyCommands[0]}\` passes` : 'the edited code reads correctly'}\n4. Report what changed with "DONE:" — done when: the summary lists every file touched\n## Verify\n${projectProfile.verifyCommands.map(c => `- \`${c}\``).join('\n') || '- re-read the edited region'}`;
-          emitArchitectToken(planContent, `Local Coder Worker (${workerModel})`, planRes.modelUsed);
+        // The architect has no tools, but a coder model asked to plan will
+        // happily answer "Let me inspect the key files first" and stop. One
+        // firm retry with the facts it already has fixes that most of the time.
+        if (plan.synthesized && !signal.aborted) {
+          notice(`↻ Architect returned no task list (it tried to inspect instead of plan) — asking again with the workspace facts it already has.`);
+          const retryMessages: AgentMessage[] = [
+            ...planMessages,
+            ...(planContent ? [{ role: 'assistant' as const, content: planContent }] : []),
+            {
+              role: 'user' as const,
+              content: `You have NO tools and cannot inspect anything - the worker does that. Using ONLY the PROJECT PROFILE and WORKSPACE CONTEXT already given, write the blueprint NOW in the required structure: ## Goal, ## Tasks (numbered, each with files), ## Verify. If the request asks for a design, plan, proposal or document, the deliverable is a file the worker creates with write_file (e.g. docs/<topic>.md) - make that an explicit task. No preamble, no questions.`
+            }
+          ];
+          try {
+            const retry = await callArchitectStreaming(
+              retryMessages,
+              architectModel,
+              `Local Coder Worker (${workerModel})`,
+              () => `**Blueprint (second attempt):**\n\n`,
+              { think: architectShouldThink('plan') }
+            );
+            const retryContent = retry.content.trim();
+            localTokensAccumulated += countTokens(retryContent);
+            const plan2 = retryContent.length >= 30 ? parseBlueprint(retryContent, 12, planOpts) : null;
+            if (plan2 && !plan2.synthesized) {
+              plan = plan2;
+              planContent = retryContent;
+            }
+          } catch (retryErr: any) {
+            console.warn('[Dual-Brain] Architect retry failed:', retryErr?.message);
+          }
         }
 
-        const plan = parseBlueprint(planContent);
+        if (plan.synthesized) {
+          // Show the worker (and the user) the checklist the engine will hold it to.
+          const fallbackText = `## Goal\n${plan.goal}\n## Tasks\n${plan.tasks.map(t => `${t.id}. ${t.title}${t.files.length ? ` — files: ${t.files.join(', ')}` : ''}${t.doneWhen ? ` — done when: ${t.doneWhen}` : ''}`).join('\n')}${plan.verify.length ? `\n## Verify\n${plan.verify.map(v => `- \`${v}\``).join('\n')}` : ''}`;
+          emitArchitectToken(`\n\n**Engine-synthesized checklist** (the architect did not return a task list):\n${fallbackText}`, `Local Coder Worker (${workerModel})`, planRes.modelUsed);
+          planContent = `${planContent}\n\n${fallbackText}`.trim();
+        }
+
         state.plan = plan;
         const checklist = renderChecklist(plan);
         const footnote = `\n\n---\n*Checklist: ${plan.tasks.length} task(s)${plan.synthesized ? ' (synthesized — the architect returned no task list)' : ''}, tracked by the engine. @Local Coder Worker: execute in order.*`;
         emitArchitectToken(footnote, `Local Coder Worker (${workerModel})`, planRes.modelUsed);
-        this.writeLiveDialogue('ARCHITECT', 'Architect Blueprint', `${blueprintHeader}${planContent}${footnote}`);
+        this.writeLiveDialogue('ARCHITECT', 'Architect Blueprint', `${blueprintHeader(planRes.modelUsed)}${planContent}${footnote}`);
 
         this.history.push({
           role: 'user',
-          content: `[LEAD ARCHITECT DIRECTIVE — Brain 1 (${planRes.modelUsed})]\n${planContent}\n\n[ENGINE CHECKLIST]\n${checklist}\n\n[WORKER EXECUTION RULES]\n1. Start with task 1 immediately by calling a tool. Do not restate, summarize, or thank.\n2. Use search_codebase before reading whole files; read only the ranges you need.\n3. After edits, the engine's verification gate runs the verify command(s) and reports failures to you - fix them.\n4. When every task is done, reply "DONE:" with the files changed and how they were verified.`
+          content: `[LEAD ARCHITECT DIRECTIVE — Brain 1 (${planRes.modelUsed})]\n${planContent}\n\n[ENGINE CHECKLIST]\n${checklist}\n\n[WORKER EXECUTION RULES]\n1. Start with task 1 immediately by calling a tool. Do not restate, summarize, or thank.\n2. Use search_codebase before reading whole files; read only the ranges you need. Inspection is preparation, not the deliverable - after at most 3-4 inspection calls, produce the output.\n3. If a task says write a document or file, create it with write_file - a design or plan is only done when the file exists on disk.\n4. After edits, the engine's verification gate runs the verify command(s) and reports failures to you - fix them.\n5. When every task is done, reply "DONE:" with the files changed and how they were verified.`
         });
 
         collab({
@@ -2914,7 +3010,7 @@ Say REVISE only for a real defect visible in the evidence: a failed verification
         }
       ];
 
-      const verifyHeader = `### 🧠 Local Architect Verification (${architectModel}) ➔ @User & @Local Coder Worker\n\n`;
+      const verifyHeader = (m: string) => `### 🧠 Local Architect Verification (${m}) ➔ @User & @Local Coder Worker\n\n`;
       let reviewModel = architectModel;
       let verifyContent = '';
       try {
@@ -2941,7 +3037,7 @@ Say REVISE only for a real defect visible in the evidence: a failed verification
 
       const footer = `\n\n---\n*⚡ Pure Local Dual-Brain • 100% Offline ($0.00) • NVIDIA RTX 5090${needsRevise ? ' • sending the worker back for one revision round' : ''}*`;
       emitArchitectToken(footer, 'User & Local Coder Worker', reviewModel);
-      const fullVerifyMsg = `${verifyHeader}${verifyContent}${footer}`;
+      const fullVerifyMsg = `${verifyHeader(reviewModel)}${verifyContent}${footer}`;
       this.history.push({ role: 'assistant', content: fullVerifyMsg });
       this.writeLiveDialogue('ARCHITECT', 'Architect Verification', fullVerifyMsg);
 
@@ -2959,8 +3055,15 @@ Say REVISE only for a real defect visible in the evidence: a failed verification
       const steps = [...verdict.nextSteps, ...verdict.issues].slice(0, 8);
       this.history.push({
         role: 'user',
-        content: `[ARCHITECT REVIEW — REVISE (round ${state.reviewRounds}/${maxReviewRounds})]\n${steps.length ? steps.map((s, i) => `${i + 1}. ${s}`).join('\n') : 'Fix the failed verification reported above.'}\n\nAddress each point with tool calls now. When finished, reply "DONE:" with a summary.`
+        content: `[ARCHITECT REVIEW — REVISE (round ${state.reviewRounds}/${maxReviewRounds})]\n${steps.length ? steps.map((s, i) => `${i + 1}. ${s}`).join('\n') : 'Fix the failed verification reported above.'}\n\nYou MUST act with tools in your next turn (write_file / edit_file / run_command). A text-only reply counts as no progress. When finished, reply "DONE:" with a summary.`
       });
+      // The revision round gets a fresh continuation budget: the nudge keys
+      // from the first pass would otherwise silence every reminder, and the
+      // round could end three seconds later having done nothing.
+      const toolCallsAtRevise = state.toolCalls;
+      state.lastNudgeKey = '';
+      state.nudges = Math.min(state.nudges, 1);
+      state.intentNudges = Math.min(state.intentNudges, 1);
       collab({
         stage: 'escalate',
         activeRole: 'architect',
@@ -2972,14 +3075,17 @@ Say REVISE only for a real defect visible in the evidence: a failed verification
       if (!signal.aborted) {
         const gate = await runVerificationGate(false);
         const stillFailing = gate.ran && !gate.passed;
-        const signoff = stillFailing
-          ? `⚠️ Revision round complete, but the verification gate is still failing. The remaining errors are shown above - ask me to continue and I will keep fixing them.`
-          : `✅ Revision round complete${gate.ran ? ' and the verification gate passed' : ''}.`;
+        const didWork = state.toolCalls > toolCallsAtRevise;
+        const signoff = !didWork
+          ? `⚠️ Revision round ended without any tool calls - the worker replied in text only, so the architect's issues above are still open. Ask me to continue and I will start from the first one.`
+          : stillFailing
+            ? `⚠️ Revision round complete, but the verification gate is still failing. The remaining errors are shown above - ask me to continue and I will keep fixing them.`
+            : `✅ Revision round complete${gate.ran ? ' and the verification gate passed' : ''}: ${state.edited.size} file(s) changed in total.`;
         notice(signoff);
         collab({
           stage: 'verified',
           activeRole: 'architect',
-          title: stillFailing ? 'Revisions Applied — Verification Still Failing' : 'Task Verified After Revision (Local Dual-Brain • 100% Free)',
+          title: !didWork ? 'Revision Round Made No Changes' : stillFailing ? 'Revisions Applied — Verification Still Failing' : 'Task Verified After Revision (Local Dual-Brain • 100% Free)',
           message: signoff
         });
       }

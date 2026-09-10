@@ -79,7 +79,48 @@ function sectionBody(md: string, names: string[]): string | null {
  * a "## Tasks" section is preferred, but any numbered list will do, and a
  * blueprint with no list at all yields a synthesized generic plan.
  */
-export function parseBlueprint(md: string, maxTasks = 12): TaskPlan {
+const SLUG_STOP = new Set(['help', 'me', 'design', 'create', 'write', 'make', 'build', 'the', 'a', 'an', 'for', 'of', 'and', 'to', 'with', 'my', 'our', 'this', 'that', 'please', 'new', 'some']);
+
+function slugFromPrompt(prompt: string): string {
+  const words = (prompt || '').toLowerCase().match(/[a-z][a-z0-9]+/g) || [];
+  const picked = words.filter(w => w.length >= 3 && !SLUG_STOP.has(w)).slice(0, 5);
+  return picked.length ? picked.join('-') : 'design';
+}
+
+/** True when the request wants a document (design, plan, spec) rather than a code change. */
+export function isDocumentRequest(prompt: string): boolean {
+  const p = (prompt || '').toLowerCase();
+  return /\b(design (an?|the) architecture|architecture (design|proposal|document)|design doc|proposal|write-?up|specification|spec for|roadmap|documentation for|document (the|this|how)|readme|migration plan|implementation plan|technical plan|adr\b)/.test(p)
+    || /\b(design|architect|plan|document|outline|propose)\b/.test(p) && !/\b(fix|bug|edit|refactor|rename|implement|add|remove|delete|update|change)\b/.test(p);
+}
+
+/**
+ * A request-aware fallback checklist for when the architect returned no
+ * task list. The old fallback said "implement the requested change", which
+ * for a design request let the worker inspect files for ten turns and
+ * stop, having produced nothing - the deliverable was never named.
+ */
+export function synthesizePlan(prompt: string, verifyCommand?: string): TaskPlan {
+  const tasks: PlanTask[] = [];
+  if (isDocumentRequest(prompt)) {
+    const file = `docs/${slugFromPrompt(prompt)}.md`;
+    tasks.push(
+      { id: 1, title: 'Survey the existing code and docs relevant to the request with search_codebase / read_file (at most 3 calls)', files: [], kind: 'inspect', status: 'pending' },
+      { id: 2, title: `Write the complete deliverable document to ${file} with write_file`, files: [file], kind: 'edit', status: 'pending', doneWhen: `${file} exists and contains the full design, not a summary` },
+      { id: 3, title: `Reply "DONE:" with the path ${file} and a 3-line summary`, files: [], kind: 'other', status: 'pending' }
+    );
+    return { goal: `Produce the requested document at ${file}`, tasks, verify: [], risks: [], raw: '', synthesized: true };
+  }
+  tasks.push(
+    { id: 1, title: 'Locate the relevant code with search_codebase / read_file', files: [], kind: 'inspect', status: 'pending' },
+    { id: 2, title: 'Implement the requested change with edit_file / write_file', files: [], kind: 'edit', status: 'pending' },
+    { id: 3, title: verifyCommand ? `Run \`${verifyCommand}\` and fix anything it reports` : 'Re-read the edited region to confirm the change', files: [], kind: 'run', status: 'pending' },
+    { id: 4, title: 'Reply "DONE:" listing the files changed', files: [], kind: 'other', status: 'pending' }
+  );
+  return { goal: 'Complete the requested change', tasks, verify: verifyCommand ? [verifyCommand] : [], risks: [], raw: '', synthesized: true };
+}
+
+export function parseBlueprint(md: string, maxTasks = 12, opts: { prompt?: string; verifyCommand?: string } = {}): TaskPlan {
   const raw = (md || '').replace(/\r\n/g, '\n');
 
   const goalBody = sectionBody(raw, ['goal', 'objective', 'summary']);
@@ -94,7 +135,12 @@ export function parseBlueprint(md: string, maxTasks = 12): TaskPlan {
   goal = goal.slice(0, 240);
 
   const tasksBody = sectionBody(raw, ['tasks', 'task list', 'steps', 'plan', 'implementation steps', 'execution steps', 'blueprint', 'checklist']);
-  const source = tasksBody && /^\s*(\d+[.)]|[-*]\s*\[[ x]\])/m.test(tasksBody) ? tasksBody : raw;
+  // Inside an explicit Tasks section, plain "- " bullets are tasks too.
+  // Elsewhere only numbered / checkbox items count, since loose bullets are
+  // usually risks or notes.
+  const sectionHasItems = !!tasksBody && /^\s{0,1}(\d+[.)]|[-*•]\s*(\[[ xX]\])?)\s+\S/m.test(tasksBody);
+  const source = sectionHasItems ? (tasksBody as string) : raw;
+  const allowBullets = sectionHasItems;
 
   const tasks: PlanTask[] = [];
   const lines = source.split('\n');
@@ -130,7 +176,8 @@ export function parseBlueprint(md: string, maxTasks = 12): TaskPlan {
 
   for (const line of lines) {
     if (tasks.length >= maxTasks) break;
-    const numbered = line.match(/^\s{0,3}(?:\d+[.)]|[-*]\s*\[[ xX]\])\s+(.+)$/);
+    const numbered = line.match(/^\s{0,3}(?:\d+[.)]|[-*]\s*\[[ xX]\])\s+(.+)$/)
+      || (allowBullets ? line.match(/^\s{0,1}[-*•]\s+(?!\[)(.+)$/) : null);
     if (numbered) {
       flush();
       current = { title: numbered[1], detail: [] };
@@ -169,17 +216,14 @@ export function parseBlueprint(md: string, maxTasks = 12): TaskPlan {
     }
   }
 
-  let synthesized = false;
   if (tasks.length === 0) {
-    synthesized = true;
-    tasks.push(
-      { id: 1, title: 'Locate the relevant code with search_codebase / read_file', files: [], kind: 'inspect', status: 'pending' },
-      { id: 2, title: 'Implement the requested change with edit_file / write_file', files: [], kind: 'edit', status: 'pending' },
-      { id: 3, title: 'Verify the change builds and summarize what was done', files: [], kind: 'run', status: 'pending' }
-    );
+    const fallback = synthesizePlan(opts.prompt || '', opts.verifyCommand);
+    fallback.raw = raw;
+    if (goal) fallback.goal = goal;
+    return fallback;
   }
 
-  return { goal, tasks, verify: verify.slice(0, 6), risks: risks.slice(0, 6), raw, synthesized };
+  return { goal, tasks, verify: verify.slice(0, 6), risks: risks.slice(0, 6), raw, synthesized: false };
 }
 
 export function renderChecklist(plan: TaskPlan, opts: { withGoal?: boolean; compact?: boolean } = {}): string {
