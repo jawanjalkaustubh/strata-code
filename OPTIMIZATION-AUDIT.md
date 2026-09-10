@@ -408,3 +408,12 @@ The engine mechanics held (structured 5-task plan, tasks auto-closed on writes, 
 | The blueprint was emitted twice (model repetition). | `dedupeRepeatedBlueprint` keeps the first copy before parsing. |
 
 Both roles ran on Qwen3-Coder in that run: the task-mode toggle was General (worker = general model by design) and the coder server was resident, so the arbiter routed both roles to it. With the 30 GB card, the two-model split only exists when the coder server is down and both models live in Ollama (swapped per phase).
+
+### Round 4 — advisory requests and a looping architect (applied 2026-09-10)
+
+Transcript: *"Inspect the workspace files and suggest code improvements"*, coder server resident, 27 s end to end. Routing, arbiter, checklist and review all worked. Two defects:
+
+- **Advisory requests were treated as edit jobs.** The architect turned "suggest improvements" into "update SUGGESTED_IMPROVEMENTS.md" and the worker replaced the first 24 lines of the user's real document with a generic list (restored from git). `isAdvisoryRequest()` now recognises suggest / review / audit / analyze / inspect / explain requests with no edit verb: they bypass the architect, the prompt carries an engine note asking for an answer in chat with file:line findings, and `edit_file` / `write_file` are refused for that run.
+- **The architect looped.** Planning without tools, the coder wrote a fake `python` tool call and re-emitted the whole blueprint seven times. `callArchitectStreaming` now aborts the generation at the first repeated `## Goal` or the first fake tool call after the task list and keeps the first copy; planning/review calls are capped at 3,072 tokens.
+
+Left untouched in the workspace, created by earlier agent runs tonight and not part of this work: `IMPLEMENTATION_PLAN.md`, `IMPROVEMENT_SUGGESTIONS.md`, `src/components/CodeEditorImproved.tsx`, `src/components/FileTreeImproved.tsx`, `src/utils/`.

@@ -5,7 +5,8 @@ import {
 } from './grounding';
 import {
   TaskPlan, parseBlueprint, renderChecklist, pendingTasks, applyToolOutcome, applyCompletionClaims,
-  closeTasksClaimedDone, detectCompletionClaim, detectNarratedIntent, extractEmbeddedToolCalls, parseReviewVerdict
+  closeTasksClaimedDone, detectCompletionClaim, detectNarratedIntent, extractEmbeddedToolCalls, parseReviewVerdict,
+  isAdvisoryRequest
 } from './plan';
 import { WebContents } from 'electron';
 import * as fs from 'fs';
@@ -977,10 +978,12 @@ export class AgentEngine {
     // engine then treated as a failed plan and retried.
     const editVerb = /\b(fix|implement|add|create|write|refactor|update|change|remove|delete|rename|build|make|generate|design|migrate|convert|replace|move|extract|introduce|set up|setup|install|configure|optimi[sz]e|rework|improve)\b/i.test(p);
     const isQuestion = (/\?\s*$/.test(p) || /^(does|do|is|are|can|could|should|will|would|what|which|why|how|where|when|who|explain|describe|tell me|summari[sz]e|what's|whats|show me)\b/i.test(p)) && !editVerb;
-    const direct = isSingleWordAck || isQuestion || band === 'trivial';
+    const advisory = isAdvisoryRequest(p);
+    const direct = isSingleWordAck || isQuestion || advisory || band === 'trivial';
     const useArchitect = !direct;
     const tier = userTier;
     if (isQuestion) reasons.push('question - direct answer, no blueprint');
+    else if (advisory) reasons.push('analysis request - inspect and answer in chat, no file changes');
     else if (band === 'trivial' && !isSingleWordAck) reasons.push('mechanical task - direct worker');
 
     const head = useArchitect
@@ -1226,7 +1229,8 @@ ${parts.join('\n\n')}`;
       payload.top_k = 20;
       payload.repetition_penalty = 1.05;
       // Hard cap so one runaway generation cannot eat the whole context window.
-      payload.max_tokens = 8192;
+      // Planning/review calls (no tools) never need more than ~3K.
+      payload.max_tokens = useTools ? 8192 : 3072;
     }
 
     if (useTools) {
@@ -2092,6 +2096,13 @@ WORKING METHOD (follow exactly):
       contextualizedPrompt = `${contextualizedPrompt}\n\n${retrievalBlock}`;
     }
 
+    // Advisory runs deliver an answer, never edits. The note goes to the model;
+    // the tool refusal below enforces it regardless.
+    const advisoryRun = !isSingleWordAck && isAdvisoryRequest(prompt);
+    if (advisoryRun) {
+      contextualizedPrompt = `${contextualizedPrompt}\n\n[ENGINE NOTE] This is an analysis request. Inspect with search_codebase / read_file / list_files, then answer in chat with concrete, specific findings (file and line, what is wrong, what to change). Do NOT modify any files - the user asked for suggestions, not changes. End with a short prioritized list.`;
+    }
+
     this.history.push({
       role: 'user',
       content: contextualizedPrompt,
@@ -2312,20 +2323,46 @@ WORKING METHOD (follow exactly):
         state.currentBubble = `architect:${target}`;
         if (header) this.send('agent:token', { token: header, ...sender });
       };
-      const res = await this.callLocalModel(
-        messages,
-        target,
-        signal,
-        taskMode,
-        (tok) => { start(); this.send('agent:token', { token: tok, ...sender }); },
-        false,
-        { think: opts.think }
-      );
-      start();
-      if (!res.streamed && res.content) {
-        this.send('agent:token', { token: res.content, ...sender });
+
+      // Early stop. A coder model planning without tools sometimes writes a
+      // fake python tool call and then re-emits the whole plan, seven times
+      // over. The first repeat (or the first fake call after the task list)
+      // ends the generation; the parser keeps the first copy.
+      const local = new AbortController();
+      const relay = () => local.abort();
+      signal.addEventListener('abort', relay);
+      let acc = '';
+      let cut = false;
+      const onTok = (tok: string) => {
+        start();
+        if (cut) return;
+        acc += tok;
+        const goals = (acc.match(/^#{1,3}\s*goal\b/gim) || []).length;
+        const hasTasks = /^#{1,3}\s*tasks\b/im.test(acc);
+        const fakeCall = hasTasks && /```(?:python|py|json|tool_call)?\s*\n\s*(?:list_files|read_file|edit_file|write_file|run_command|search_codebase)\s*\(/i.test(acc);
+        if (goals >= 2 || fakeCall) {
+          cut = true;
+          local.abort();
+          return;
+        }
+        this.send('agent:token', { token: tok, ...sender });
+      };
+      try {
+        const res = await this.callLocalModel(messages, target, local.signal, taskMode, onTok, false, { think: opts.think });
+        start();
+        if (!res.streamed && res.content) {
+          this.send('agent:token', { token: res.content, ...sender });
+        }
+        return { content: cut ? acc : (res.content || ''), modelUsed: target };
+      } catch (err: any) {
+        if (cut && !signal.aborted) {
+          notice('✂️ Architect started repeating itself; stopped it and kept the first plan.');
+          return { content: acc, modelUsed: target };
+        }
+        throw err;
+      } finally {
+        signal.removeEventListener('abort', relay);
       }
-      return { content: res.content || '', modelUsed: target };
     };
 
     const emitArchitectToken = (text: string, addressedTo: string, id: string) => {
@@ -2475,7 +2512,14 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
       // with a padded rewrite. Replacing a file it has not read this run is
       // refused with instructions; new files and files it has read pass.
       let refused = false;
-      if (toolName === 'write_file') {
+      if (advisoryRun && (toolName === 'write_file' || toolName === 'edit_file')) {
+        refused = true;
+        result = {
+          success: false,
+          output: `Refused: this is an analysis request ("suggest", "review", "inspect"...), so files must not be modified. Put your findings in your reply instead - concrete file:line references and what you would change. If the user wants the changes applied, they will ask.`
+        };
+      }
+      if (!refused && toolName === 'write_file') {
         const wkey = String(toolArgs.path || '').replace(/\\/g, '/').toLowerCase();
         try {
           const resolved = this.tools.resolvePath(toolArgs.path || '');

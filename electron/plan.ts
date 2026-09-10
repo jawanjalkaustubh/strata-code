@@ -94,6 +94,22 @@ export function isDocumentRequest(prompt: string): boolean {
     || /\b(design|architect|plan|document|outline|propose)\b/.test(p) && !/\b(fix|bug|edit|refactor|rename|implement|add|remove|delete|update|change)\b/.test(p);
 }
 
+const EDIT_VERB_RE = /\b(fix|implement|add|create|write|refactor|update|change|remove|delete|rename|build|make|generate|migrate|convert|replace|move|extract|introduce|set up|setup|install|configure|optimi[sz]e|rework|apply|patch|edit|modify|clean up|cleanup|correct)\b/i;
+
+/**
+ * True when the user wants an analysis delivered as an answer, not a change:
+ * "inspect the workspace and suggest improvements", "review this", "audit the
+ * arbiter". The old loop turned these into edits of whatever doc looked
+ * related and rewrote the user's real files.
+ */
+export function isAdvisoryRequest(prompt: string): boolean {
+  const p = (prompt || '').trim();
+  if (!p) return false;
+  if (isDocumentRequest(p)) return false;
+  if (EDIT_VERB_RE.test(p)) return false;
+  return /\b(suggest|recommend|recommendations?|review|audit|analy[sz]e|analysis|inspect|assess|evaluate|critique|compare|explain|summari[sz]e|walk me through|what (?:do you|would you) (?:think|suggest|recommend)|any (?:ideas|suggestions)|find (?:bugs|issues|problems)|look for (?:bugs|issues|problems)|what'?s wrong)\b/i.test(p);
+}
+
 /**
  * A request-aware fallback checklist for when the architect returned no
  * task list. The old fallback said "implement the requested change", which
