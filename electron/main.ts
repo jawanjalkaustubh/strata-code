@@ -389,11 +389,18 @@ function startCoderServerIfDown() {
         // Spawning the script with stdio:'ignore' gave llama-server no stdout
         // to log to, and it exited immediately on Windows - the auto-start
         // "ran" but never produced a server.
-        const child = spawn(
-          'cmd.exe',
-          ['/c', 'start', '"Llama Server - Port 8080"', 'powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', serverScript],
-          { detached: true, stdio: 'ignore', windowsHide: true }
-        );
+        // Verbatim command line: Node's own Windows argument quoting wrapped
+        // the pre-quoted title in a second layer of quotes, and `start`
+        // silently did nothing - the log said "Auto-starting..." and no
+        // process ever appeared.
+        const commandLine = `/c start "Llama Server - Port 8080" powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${serverScript}"`;
+        agent.markCoderServerStarting();
+        const child = spawn('cmd.exe', [commandLine], {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: true,
+          windowsVerbatimArguments: true
+        });
         child.unref();
       }
     });

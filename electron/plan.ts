@@ -235,7 +235,8 @@ export function parseBlueprint(md: string, maxTasks = 12, opts: { prompt?: strin
   if (tasks.length === 0) {
     const fallback = synthesizePlan(opts.prompt || '', opts.verifyCommand);
     fallback.raw = raw;
-    if (goal) fallback.goal = goal;
+    // "I'll inspect the workspace to..." is narration, not a goal.
+    if (goal && !detectNarratedIntent(goal) && !/^(i'?ll|let me|i will|i am going)\b/i.test(goal)) fallback.goal = goal;
     return fallback;
   }
 

@@ -558,8 +558,11 @@ export class AgentEngine {
       // A llama-server that is still loading its model does not answer /props,
       // but it already owns most of the card. Treating "not answering" as
       // "nothing resident" is how a 27B Ollama model got loaded on top of a
-      // half-loaded 23 GB coder and froze the desktop.
-      if (!props && serverProcess) {
+      // half-loaded 23 GB coder and froze the desktop. The "just launched"
+      // window covers the seconds between spawning the launch script and the
+      // process becoming visible - a prompt sent right after app start used
+      // to slip through that gap.
+      if (!props && (serverProcess || Date.now() < this.coderStartingUntil)) {
         status.llamaServer.loading = true;
       }
 
@@ -593,6 +596,13 @@ export class AgentEngine {
     } finally {
       this.engineProbeInFlight = null;
     }
+  }
+
+  /** Until this time the coder server is assumed to be loading even if its process is not visible yet. */
+  private coderStartingUntil = 0;
+  markCoderServerStarting(graceMs = 90000) {
+    this.coderStartingUntil = Date.now() + graceMs;
+    this.engineStatus = null; // force the next probe to see it
   }
 
   /** True when a llama-server process is running on this machine (answering or not). */
