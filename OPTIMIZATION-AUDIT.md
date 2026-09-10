@@ -341,3 +341,18 @@ Unit tests at that point: 31 passing. Mirrors **not** synced.
 - **Run 4 (11 s):** blueprint → `read_file` → one `edit_file` → `npm run typecheck` → `DONE:` → `VERDICT: APPROVE`. No nudges, no duplicate commands, independent typecheck exit 0.
 
 Final state: 32 unit tests passing, `npm run typecheck` clean, `npm run build` clean.
+
+---
+
+## Part 8 — Startup hang and blank window (applied 2026-09-10)
+
+Reported after the Part 7 build: *"the app doesn't open, it's hanged"*, then *"it loads but it's a blank window"*. Three separate causes, all in startup code, two of them latent from the previous session's status-bar and render-performance work that had never been built until now.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| No window for several seconds | `getSystemHardwareInfo()` ran `execSync('nvidia-smi')` (3 s timeout) and a PowerShell CIM fallback (4 s) at module load, before the window existed. `nvidia-smi` stalls while CUDA is loading a model - and the launcher had just started that load. | Detection is async (`detectHardwareInfo()`), runs after `createWindow()`, and never blocks; `system:get-info` awaits it. |
+| System sluggish for ~40 s around launch | `run-strata-code.bat` started llama-server (26 GB load: disk + PCIe + GPU saturated) *before* Electron; `main.ts` started it again 1.2 s after window creation. | Launcher starts Electron first and no longer starts the coder server; the app starts it once, 3 s after the renderer's `did-finish-load`. |
+| Blank window after the splash | React error #310. Fifteen `useEventCallback` hooks were declared **after** `if (!isReady) return <Splash/>`, so they were skipped on the first render and executed on the next. | Block moved above the early return, with a comment saying why it must stay there. |
+| In-app coder auto-start never produced a server | The script was spawned with `stdio: 'ignore'`; llama-server logs to stdout and exited immediately on Windows without one. The launcher's visible console window is why *its* start worked. | Spawned via `cmd /c start "Llama Server - Port 8080" powershell ...` - its own console window, same as the launcher. |
+
+Verified: window visible 1.6 s after launch, all four Electron processes responding, zero renderer console errors on the production bundle, coder server auto-started after the UI loaded.

@@ -365,10 +365,15 @@ function startCoderServerIfDown() {
       const serverScript = 'C:\\AI_dev\\llama.cpp\\launch-server-8080.ps1';
       if (fs.existsSync(serverScript)) {
         console.log('[Strata Code] Local llama-server (Port 8080) is offline. Auto-starting...');
-        const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', serverScript], {
-          detached: true,
-          stdio: 'ignore'
-        });
+        // In its own console window, exactly like run-strata-code.bat did.
+        // Spawning the script with stdio:'ignore' gave llama-server no stdout
+        // to log to, and it exited immediately on Windows - the auto-start
+        // "ran" but never produced a server.
+        const child = spawn(
+          'cmd.exe',
+          ['/c', 'start', '"Llama Server - Port 8080"', 'powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', serverScript],
+          { detached: true, stdio: 'ignore', windowsHide: true }
+        );
         child.unref();
       }
     });

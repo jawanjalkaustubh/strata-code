@@ -749,6 +749,29 @@ export const App: React.FC = () => {
     setActiveDiff(null);
   });
 
+  // These MUST stay above the splash-screen early return below. Declared after
+  // it, they were skipped on the first render and executed on the next - 45
+  // extra hooks, React error #310, and a blank window on every launch.
+  // --- stable UI handlers -------------------------------------------------
+  // Previously inline arrows in JSX. A new function identity on every render
+  // silently defeats React.memo on the children below, so memoizing them
+  // without this would have achieved nothing.
+  const openAbout = useEventCallback(() => setIsAboutOpen(true));
+  const closeAbout = useEventCallback(() => setIsAboutOpen(false));
+  const openModelManager = useEventCallback(() => setIsModelManagerOpen(true));
+  const closeModelManager = useEventCallback(() => setIsModelManagerOpen(false));
+  const openDualBrain = useEventCallback(() => setIsDualBrainModalOpen(true));
+  const closeDualBrain = useEventCallback(() => setIsDualBrainModalOpen(false));
+  const toggleEditor = useEventCallback(() => setIsEditorOpen((v: boolean) => !v));
+  const closeEditor = useEventCallback(() => setIsEditorOpen(false));
+  const toggleTerminal = useEventCallback(() => setIsTerminalOpen((v: boolean) => !v));
+  const closeTerminal = useEventCallback(() => setIsTerminalOpen(false));
+  const startFileTreeDrag = useEventCallback(() => setIsDragging('fileTree'));
+  const startChatPanelDrag = useEventCallback(() => setIsDragging('chatPanel'));
+  const saveActiveFile = useEventCallback(() => { if (activeFile) handleSave(activeFile); });
+  const closeActiveTab = useEventCallback(() => { if (activeFile) handleCloseTab(activeFile); });
+  const clearPullProgress = useEventCallback(() => setPullProgress(null));
+
   if (!isReady) {
     return (
       <div className="h-screen w-screen flex flex-col items-center justify-center bg-studio-bg select-none animate-in fade-in duration-300">
@@ -780,26 +803,6 @@ export const App: React.FC = () => {
       </div>
     );
   }
-
-  // --- stable UI handlers -------------------------------------------------
-  // Previously inline arrows in JSX. A new function identity on every render
-  // silently defeats React.memo on the children below, so memoizing them
-  // without this would have achieved nothing.
-  const openAbout = useEventCallback(() => setIsAboutOpen(true));
-  const closeAbout = useEventCallback(() => setIsAboutOpen(false));
-  const openModelManager = useEventCallback(() => setIsModelManagerOpen(true));
-  const closeModelManager = useEventCallback(() => setIsModelManagerOpen(false));
-  const openDualBrain = useEventCallback(() => setIsDualBrainModalOpen(true));
-  const closeDualBrain = useEventCallback(() => setIsDualBrainModalOpen(false));
-  const toggleEditor = useEventCallback(() => setIsEditorOpen((v: boolean) => !v));
-  const closeEditor = useEventCallback(() => setIsEditorOpen(false));
-  const toggleTerminal = useEventCallback(() => setIsTerminalOpen((v: boolean) => !v));
-  const closeTerminal = useEventCallback(() => setIsTerminalOpen(false));
-  const startFileTreeDrag = useEventCallback(() => setIsDragging('fileTree'));
-  const startChatPanelDrag = useEventCallback(() => setIsDragging('chatPanel'));
-  const saveActiveFile = useEventCallback(() => { if (activeFile) handleSave(activeFile); });
-  const closeActiveTab = useEventCallback(() => { if (activeFile) handleCloseTab(activeFile); });
-  const clearPullProgress = useEventCallback(() => setPullProgress(null));
 
   return (
     <div className="h-screen w-screen flex flex-col bg-studio-bg overflow-hidden text-studio-text select-none">
