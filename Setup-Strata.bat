@@ -9,7 +9,11 @@ echo           Author: Kaustubh Jawanjal
 echo =======================================================
 echo Initializing setup wizard...
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Setup-Strata.ps1"
+if exist "%~dp0installer\Setup-Strata.ps1" (
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0installer\Setup-Strata.ps1"
+) else (
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0Setup-Strata.ps1"
+)
 
 if %ERRORLEVEL% NEQ 0 (
     echo.

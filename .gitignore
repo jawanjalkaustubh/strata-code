@@ -6,3 +6,5 @@ backup-*/
 .vite/
 Thumbs.db
 agent-leftovers-*/
+release/
+strata-live-session.md

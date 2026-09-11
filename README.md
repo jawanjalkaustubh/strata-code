@@ -7,8 +7,8 @@
 
 ## 📁 Repository & Distribution Paths
 - **Active Workspace:** `D:\AntiGravity\strata`
-- **1-Click Setup Launcher:** `D:\AntiGravity\Setup-Strata.bat`
-- **Distributable Package:** `D:\AntiGravity\Strata-Code-Windows-x64.zip` (159 MB)
+- **1-Click Setup Launcher:** `D:\AntiGravity\strata\Setup-Strata.bat`
+- **Distributable Package:** `D:\AntiGravity\strata\release\Strata-Code-Windows-x64.zip` (159 MB)
 - **Backup & Archive Mirror:** `C:\AI_dev\projects\strata`
 - **Architecture Documentation:** [ARCHITECTURE.md](file:///D:/AntiGravity/strata/ARCHITECTURE.md)
 - **AI & Developer Guide:** [PROJECT_OVERVIEW.md](file:///D:/AntiGravity/strata/PROJECT_OVERVIEW.md)

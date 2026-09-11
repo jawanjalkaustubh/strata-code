@@ -54,9 +54,10 @@ ollama pull qwen2.5-coder:7b      # Ultra-fast / Lightweight (8GB GPUs)
 | **Google Antigravity** | Installed on workstation | Cloud Architect & pair-programming companion |
 | **Google Gemini API** | *Optional* (Free Tier / Keyless supported) | Connects to gemini-3.8-flash or gemini-3.1-pro |
 | **Optional Frontier Keys** | Anthropic, OpenAI, DeepSeek, OpenRouter | Optional fallback or cloud provider switching |
-| **Python Runtime** | Python 3.8+ (with equests optional) | Powers the real-time live bridge daemon |
-| **Inference Bridge** | D:\AntiGravity\query-local-worker.ps1 | Connects Antigravity directly to local Ollama on RTX 5090 |
-| **Live Dialogue Stream** | D:\AntiGravity\strata-live-session.md | Shared real-time communication log between models |
+| **Python Runtime** | Python 3.8+ (with 
+equests optional) | Powers the real-time live bridge daemon |
+| **Inference Bridge** | D:\AntiGravity\strata\query-local-worker.ps1 | Connects Antigravity directly to local Ollama on RTX 5090 |
+| **Live Dialogue Stream** | D:\AntiGravity\strata\strata-live-session.md | Shared real-time communication log between models |
 
 ---
 
@@ -87,7 +88,7 @@ npm run build
 ## 🎮 User Operation Guide
 
 ### 1. Launching Strata Code
-You have several 1-click launch options located at D:\AntiGravity:
+You have several 1-click launch options located at D:\AntiGravity\strata:
 
 - **Launch-Strata.bat**: 
   - Standard launcher. Checks if Ollama is running (auto-starts it if offline), launches the background live stream watcher, and opens Strata.
@@ -157,13 +158,12 @@ When operating in **Hybrid Mode**:
 ## 💾 Automated Backup & Distribution
 
 ### 1-Click Backup
-Run D:\AntiGravity\Backup-Strata.bat. It automatically:
+Run D:\AntiGravity\strata\Backup-Strata.bat. It automatically:
 1. Synchronizes all modified source files, engine updates, and assets to:
    - Primary: D:\AntiGravity\strata
-   - Mirror 1: D:\AntiGravity\local-code-studio
-   - Mirror 2: C:\AI_dev\projects\strata
+   - Mirror: C:\AI_dev\projects\strata
 2. Packages the entire project into a self-contained portable archive:
-   - D:\AntiGravity\Strata-Code-Windows-x64.zip
+   - D:\AntiGravity\strata\release\Strata-Code-Windows-x64.zip
    - C:\AI_dev\projects\strata\Strata-Code-Windows-x64.zip
 
 ---

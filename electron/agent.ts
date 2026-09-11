@@ -320,7 +320,7 @@ export class AgentEngine {
 
   writeLiveDialogue(type: 'USER' | 'ARCHITECT' | 'WORKER' | 'VERIFICATION', title: string, content: string) {
     try {
-      const livePath = 'D:\\AntiGravity\\strata-live-session.md';
+      const livePath = 'D:\\AntiGravity\\strata\\strata-live-session.md';
       const timeStr = new Date().toLocaleTimeString();
       let entry = '';
       if (type === 'USER') {

@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>For My Dearest Wife</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Courier New', cursive;
+            background: linear-gradient(135deg, #ffafbd, #ffc3a0);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+
+        .card {
+            background-color: rgba(255, 255, 255, 0.9);
+            border-radius: 20px;
+            box-shadow: 
+                0 10px 30px rgba(0, 0, 0, 0.2),
+                0 0 0 4px #fff,
+                0 0 0 8px #ffc3a0;
+            padding: 40px;
+            text-align: center;
+            max-width: 600px;
+            width: 90%;
+            position: relative;
+            z-index: 10;
+            animation: fadeIn 1.5s ease-out;
+            transform-style: preserve-3d;
+            transition: all 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-10px) scale(1.02);
+            box-shadow: 
+                0 15px 40px rgba(0, 0, 0, 0.3),
+                0 0 0 4px #fff,
+                0 0 0 8px #e91e63;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        h1 {
+            color: #e91e63;
+            font-size: 2.5rem;
+            margin-bottom: 20px;
+            animation: floatText 2s ease-in-out infinite;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        @keyframes floatText {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-15px); }
+        }
+
+        .message {
+            font-size: 1.2rem;
+            line-height: 1.6;
+            color: #333;
+            margin-bottom: 30px;
+        }
+
+        .hearts-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        .heart {
+            position: absolute;
+            color: #e91e63;
+            font-size: 24px;
+            animation: float 8s infinite ease-in-out;
+            opacity: 0;
+            animation-delay: calc(var(--i) * 0.5s);
+        }
+
+        @keyframes float {
+            0% {
+                transform: translateY(100vh) rotate(0deg);
+                opacity: 0;
+            }
+            10% {
+                opacity: 1;
+            }
+            90% {
+                opacity: 1;
+            }
+            100% {
+                transform: translateY(-100px) rotate(360deg);
+                opacity: 0;
+            }
+        }
+
+        /* Bouncing hearts */
+        .bounce {
+            animation: bounce 1s infinite;
+        }
+
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-20px) scale(1.2); }
+        }
+
+        /* Layered effect for elements */
+        .layer {
+            position: relative;
+            z-index: 2;
+        }
+
+        .layer::before {
+            content: '';
+            position: absolute;
+            top: 5px;
+            left: 5px;
+            width: 100%;
+            height: 100%;
+            background: rgba(233, 30, 99, 0.1);
+            border-radius: 10px;
+            z-index: -1;
+            transform: translateZ(-1px);
+        }
+
+        .secret-message {
+            display: none;
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #ffebee;
+            border-radius: 10px;
+            font-style: italic;
+            color: #e91e63;
+        }
+
+        .reveal-btn {
+            background-color: #e91e63;
+            color: white;
+            border: none;
+            padding: 12px 25px;
+            font-size: 1rem;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-top: 20px;
+        }
+
+        .reveal-btn:hover {
+            background-color: #c2185b;
+            transform: scale(1.05);
+        }
+
+        .signature {
+            margin-top: 30px;
+            font-style: italic;
+            color: #e91e63;
+        }
+    </style>
+</head>
+<body>
+    <div class="hearts-container" id="heartsContainer"></div>
+
+    <div class="card">
+        <h1 class="layer">Happy Anniversary!</h1>
+        <div class="message layer">
+            My dearest wife,
+            <br><br>
+            Every day with you is a blessing. You bring so much joy, laughter, and love into my life.
+            I cherish every moment we spend together, and I'm grateful for your unwavering support.
+            You are the most wonderful partner, friend, and soulmate I could ever ask for.
+            <br><br>
+            Thank you for being my everything.
+        </div>
+        <button class="reveal-btn layer" onclick="revealSecret()">Click Here for a Special Message</button>
+        <div class="secret-message layer" id="secretMessage">
+            You are the most beautiful woman in the world, not just in appearance, but in your heart and soul. I love you more than words can express.
+        </div>
+        <div class="signature layer">
+            With all my love,
+            <br>
+            Your Husband
+        </div>
+    </div>
+
+    <script>
+        // Create floating hearts with bouncing effect
+        function createHearts() {
+            const container = document.getElementById('heartsContainer');
+            const heartCount = 50;
+
+            for (let i = 0; i < heartCount; i++) {
+                const heart = document.createElement('div');
+                heart.classList.add('heart', 'bounce');
+                heart.innerHTML = '❤';
+                
+                // Random position
+                const left = Math.random() * 100;
+                const size = Math.random() * 20 + 10;
+                const delay = Math.random() * 5;
+                const duration = Math.random() * 5 + 5;
+                
+                heart.style.left = `${left}%`;
+                heart.style.fontSize = `${size}px`;
+                heart.style.animationDelay = `${delay}s`;
+                heart.style.animationDuration = `${duration}s`;
+                heart.style.setProperty('--i', i);
+                
+                container.appendChild(heart);
+            }
+        }
+
+        // Reveal secret message
+        function revealSecret() {
+            const secretMessage = document.getElementById('secretMessage');
+            if (secretMessage.style.display === 'none') {
+                secretMessage.style.display = 'block';
+                secretMessage.style.animation = 'fadeIn 0.5s ease-out';
+            } else {
+                secretMessage.style.display = 'none';
+            }
+        }
+
+        // Initialize on load
+        window.onload = function() {
+            createHearts();
+        };
+    </script>
+
+    <script>
+        // Create floating hearts
+        function createHearts() {
+            const container = document.getElementById('heartsContainer');
+            const heartCount = 50;
+
+            for (let i = 0; i < heartCount; i++) {
+                const heart = document.createElement('div');
+                heart.classList.add('heart');
+                heart.innerHTML = '❤';
+                
+                // Random position
+                const left = Math.random() * 100;
+                const size = Math.random() * 20 + 10;
+                const delay = Math.random() * 5;
+                const duration = Math.random() * 5 + 5;
+                
+                heart.style.left = `${left}%`;
+                heart.style.fontSize = `${size}px`;
+                heart.style.animationDelay = `${delay}s`;
+                heart.style.animationDuration = `${duration}s`;
+                
+                container.appendChild(heart);
+            }
+        }
+
+        // Reveal secret message
+        function revealSecret() {
+            const secretMessage = document.getElementById('secretMessage');
+            if (secretMessage.style.display === 'none') {
+                secretMessage.style.display = 'block';
+                secretMessage.style.animation = 'fadeIn 0.5s ease-out';
+            } else {
+                secretMessage.style.display = 'none';
+            }
+        }
+
+        // Initialize on load
+        window.onload = function() {
+            createHearts();
+        };
+    </script>
+</body>
+</html>
