@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('api', {
 
   // Workspace
   openDirectory: () => ipcRenderer.invoke('workspace:open-dialog'),
+  getCurrentWorkspace: () => ipcRenderer.invoke('workspace:get-current'),
   getFiles: (dirPath) => ipcRenderer.invoke('workspace:get-files', dirPath),
   readFile: (filePath) => ipcRenderer.invoke('workspace:read-file', filePath),
   saveFile: (filePath, content) => ipcRenderer.invoke('workspace:save-file', filePath, content),

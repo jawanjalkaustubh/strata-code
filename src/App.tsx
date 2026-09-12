@@ -17,7 +17,9 @@ import { useEventCallback } from './hooks';
 export const App: React.FC = () => {
   const api = (window as any).api;
 
-  const [workspace, setWorkspace] = useState('d:\\AntiGravity');
+  // Filled from the main process on the first getFiles() round-trip; the
+  // renderer must not assume the developer's folder layout.
+  const [workspace, setWorkspace] = useState('');
   const [files, setFiles] = useState<FileNode[]>([]);
   const [activeFile, setActiveFile] = useState<string | null>(null);
   const [tabs, setTabs] = useState<OpenTab[]>([]);

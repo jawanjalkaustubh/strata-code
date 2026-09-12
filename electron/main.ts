@@ -5,6 +5,9 @@ import * as os from 'os';
 import { exec, execFile, execFileSync, execSync, spawn, ChildProcess } from 'child_process';
 import { fileURLToPath } from 'url';
 import { AgentEngine } from './agent';
+import {
+  coderLaunchScript, coderLaunchArgs, coderModelPath, coderConfig, defaultWorkspace, rememberWorkspace, runtimeDir, modelsDir, installRoot
+} from './paths';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -252,7 +255,7 @@ const CACHE_SCHEMA_VERSION = 'v1';
 }
 
 let mainWindow: BrowserWindow | null = null;
-let currentWorkspace: string = fs.existsSync('d:\\AntiGravity') ? 'd:\\AntiGravity' : os.homedir();
+let currentWorkspace: string = defaultWorkspace();
 const agent = new AgentEngine(currentWorkspace);
 
 // GPU name is filled in asynchronously once the window is up (see whenReady).
@@ -365,7 +368,6 @@ process.on('uncaughtException', (err: any) => {
 // knew nothing about - it outlived the app, Ctrl+C in that window did nothing
 // useful, and a relaunch could not tell its own server from Ollama's runner.
 // =============================================================================
-const CODER_SCRIPT = 'C:\\AI_dev\\llama.cpp\\launch-server-8080.ps1';
 let coderChild: ChildProcess | null = null;
 const coderPidFile = () => path.join(app.getPath('userData'), 'coder-server.pid');
 const coderLogFile = () => path.join(app.getPath('userData'), 'coder-server.log');
@@ -432,8 +434,13 @@ function stopCoderServerSync(reason: string) {
  * app's model leaves too little VRAM (the status bar then offers "Free GPU").
  */
 async function startCoderServer(reason: string): Promise<boolean> {
-  if (!fs.existsSync(CODER_SCRIPT)) {
-    console.log('[Coder Server] Launch script not found: ' + CODER_SCRIPT);
+  const launchArgs = coderLaunchArgs();
+  if (!launchArgs) {
+    console.log(`[Coder Server] No launch script found (runtime dir: ${runtimeDir() || 'none'}). Run the installer, or set STRATA_RUNTIME_DIR.`);
+    return false;
+  }
+  if (!coderModelPath()) {
+    console.log(`[Coder Server] No GGUF model found (models dir: ${modelsDir() || 'none'}). Run the installer to download one.`);
     return false;
   }
   const status = await agent.probeLocalEngines(true);
@@ -470,9 +477,10 @@ async function startCoderServer(reason: string): Promise<boolean> {
   agent.markCoderServerStarting();
   // powershell -NonInteractive: the script's "Press Enter to exit" branches
   // fail fast instead of waiting on a console that does not exist.
+  console.log(`[Coder Server] ${coderLaunchScript()} -Model ${coderModelPath()} ctx=${coderConfig().ctx ?? 'script default'}`);
   const child = spawn(
     'powershell.exe',
-    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', CODER_SCRIPT],
+    launchArgs,
     { stdio: ['ignore', logFd ?? 'ignore', logFd ?? 'ignore'], windowsHide: true, detached: false }
   );
   coderChild = child;
@@ -573,10 +581,21 @@ ipcMain.handle('workspace:open-dialog', async () => {
   if (!res.canceled && res.filePaths[0]) {
     currentWorkspace = res.filePaths[0];
     agent.setWorkspace(currentWorkspace);
+    rememberWorkspace(currentWorkspace);
     return currentWorkspace;
   }
   return null;
 });
+
+// The renderer used to hard-code the developer's workspace as its initial
+// state; a tester's machine has no such folder. It now asks.
+ipcMain.handle('workspace:get-current', async () => ({
+  workspace: currentWorkspace,
+  installRoot: installRoot(),
+  runtimeDir: runtimeDir(),
+  modelsDir: modelsDir(),
+  coderModel: coderModelPath()
+}));
 
 ipcMain.handle('workspace:get-files', async (_e, dirPath?: string) => {
   const root = dirPath || currentWorkspace;
@@ -662,8 +681,7 @@ ipcMain.handle('ollama:get-models', async () => {
   const modelsList: string[] = [];
 
   // 1. Check Port 8080 llama-server or GGUF model file
-  const ggufPath = 'C:\\AI_dev\\models\\qwen3-coder\\Qwen3-Coder-30B-A3B-Instruct-Q6_K.gguf';
-  if (fs.existsSync(ggufPath)) {
+  if (coderModelPath()) {
     modelsList.push('Qwen3-Coder-30B-A3B-Instruct');
   }
 
@@ -691,10 +709,11 @@ ipcMain.handle('ollama:get-model-details', async () => {
   const detailsList: any[] = [];
 
   // 1. Inject rich metadata for Qwen3-Coder (Port 8080 llama-server)
-  const ggufPath = 'C:\\AI_dev\\models\\qwen3-coder\\Qwen3-Coder-30B-A3B-Instruct-Q6_K.gguf';
-  if (fs.existsSync(ggufPath)) {
+  const ggufPath = coderModelPath();
+  if (ggufPath && fs.existsSync(ggufPath)) {
     try {
       const stats = fs.statSync(ggufPath);
+      const quant = (path.basename(ggufPath).match(/(Q\d_K(?:_[MSL]|_XL)?|Q\d_\d|IQ\d_\w+|BF16|F16)/i) || ['Q6_K'])[0];
       detailsList.push({
         name: 'Qwen3-Coder-30B-A3B-Instruct',
         size: stats.size,
@@ -706,7 +725,7 @@ ipcMain.handle('ollama:get-model-details', async () => {
           family: 'qwen3-coder',
           families: ['qwen3-coder', 'moe'],
           parameter_size: '30.5B (3.3B Active)',
-          quantization_level: 'Q6_K (FlashAttention • 237 t/s)'
+          quantization_level: `${quant} (FlashAttention)`
         }
       });
     } catch {}

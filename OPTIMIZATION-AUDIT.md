@@ -470,3 +470,29 @@ Not verified by clicking: the **Free GPU** and **stop** buttons themselves (thei
 
 - This machine has **31 GB of system RAM**. A VRAM spill has nowhere to go; the coder's 23 GB GGUF cannot even stay in the page cache beside a 22 GB Ollama model, so each coder start re-reads it from disk (~40 s).
 - Strata Code (coder, ~28 GB) and Strata Photo (`qwen3-vl`, 22 GB) cannot both hold a model. Whichever app takes the GPU, the other reloads on next use. The cleanest way to make that automatic is to serve the coder through Ollama as well (`ollama pull` of a Qwen3-Coder GGUF, ~19 GB), so one runtime swaps models on demand; the cost is the 64K-context / 237 tok/s tuning of the dedicated server.
+
+---
+
+## Part 11 — Tester package (applied 2026-09-12)
+
+`installer\package.ps1` builds `release\Strata-Code-Windows-x64.zip` (737 MB): the Electron-packaged app (`@electron/packager`, no `node_modules` - `main.js` is fully bundled), the llama.cpp runtime (`llama-server.exe` + 26 DLLs incl. CUDA 12 cuBLAS, 1.1 GB raw), an empty `models\`, `Install.bat`/`Install.ps1`, `README.md`, `LICENSES\`. Models are downloaded by the installer: GitHub caps release assets at 2 GB and the two models total 43 GB.
+
+### Making the app relocatable (`electron/paths.ts`)
+
+Six machine-specific paths were hard-coded (`C:\AI_dev\llama.cpp`, `C:\AI_dev\models\qwen3-coder` ×3, `D:\AntiGravity` ×2). All now resolve env override → `<install root>\runtime|models` → the developer fallbacks, so `npm start` on the workstation is unchanged. The last-opened workspace is persisted in userData; the renderer no longer assumes a folder exists. The coder is launched with `-Model <gguf> -Ctx <n>` from `runtime\coder-config.json`, which the installer writes according to VRAM (≥ 28 GB → Q6_K/64K; 22–28 GB → Q4_K_M/32K; less → Q4_K_M/16K with a warning).
+
+### Installer (`Install.ps1`)
+
+Console, idempotent, resumable: system check (GPU/driver/RAM/disk) → Ollama via winget or `OllamaSetup.exe /silent` → `ollama pull qwen3.8:27b` → coder GGUF from `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF` with `curl -C -` and size verification (the Q6_K file is byte-identical to the workstation's) → `coder-config.json` → `Unblock-File` → shortcuts → launch. `-DryRun` checks everything and downloads nothing.
+
+### Verified
+
+| Check | Result |
+|---|---|
+| Zip extracted to `D:\StrataTest`, `Install.ps1 -DryRun` | Correct GPU/VRAM/RAM/disk, Ollama found, both model URLs reachable, would write Q6_K/65536 |
+| Packaged app launched from the test folder (models junctioned to the existing GGUF) | Window in ~2 s, no renderer errors, coder spawned from `D:\StrataTest\…\runtime\llama.cpp\llama-server.exe` with the test folder's model path |
+| Completion through the bundled runtime | `"bundled runtime ok"` at 64K context |
+| Close window | Coder killed with the app, VRAM released |
+| Defect found and fixed | `coder-config.json` written by PowerShell 5.1 carries a UTF-8 BOM; `JSON.parse` rejected it and the installer's context size was silently ignored. BOM is now stripped on read. |
+
+Not verified: a real end-to-end install on a machine without Ollama or the models (no such machine available); the download and winget paths were exercised only by URL/HEAD checks.

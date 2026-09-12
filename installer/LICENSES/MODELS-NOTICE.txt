@@ -1,0 +1,12 @@
+Models are NOT included in this package. Install.bat downloads them:
+
+  Qwen3-Coder-30B-A3B-Instruct (GGUF quantizations by Unsloth)
+    https://huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF
+    License: Apache-2.0 (Qwen Team, Alibaba Cloud)
+
+  qwen3.8:27b via Ollama
+    https://ollama.com/library/qwen3.8
+    License: Apache-2.0 (Qwen Team, Alibaba Cloud)
+
+  Ollama (installed separately by the installer)
+    https://ollama.com  — MIT License

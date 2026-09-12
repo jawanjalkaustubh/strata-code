@@ -12,6 +12,7 @@ import { WebContents } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFile, spawn } from 'child_process';
+import { liveSessionPath, coderModelPath as resolveCoderModelPath } from './paths';
 
 export interface AgentMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -324,7 +325,7 @@ export class AgentEngine {
 
   writeLiveDialogue(type: 'USER' | 'ARCHITECT' | 'WORKER' | 'VERIFICATION', title: string, content: string) {
     try {
-      const livePath = 'D:\\AntiGravity\\strata\\strata-live-session.md';
+      const livePath = liveSessionPath();
       const timeStr = new Date().toLocaleTimeString();
       let entry = '';
       if (type === 'USER') {
@@ -630,17 +631,9 @@ export class AgentEngine {
     return m ? parseInt(m[1], 10) : 8080;
   }
 
-  /** Path of the coder GGUF the launch script will pick, if it exists. */
-  static CODER_MODEL_DIR = 'C:\\AI_dev\\models\\qwen3-coder';
+  /** Path of the coder GGUF the launch script will load, if one is installed (see paths.ts). */
   coderModelPath(): string | null {
-    try {
-      const dir = AgentEngine.CODER_MODEL_DIR;
-      if (!fs.existsSync(dir)) return null;
-      const gguf = fs.readdirSync(dir).find(f => /\.gguf$/i.test(f));
-      return gguf ? path.join(dir, gguf) : null;
-    } catch {
-      return null;
-    }
+    return resolveCoderModelPath();
   }
 
   /** VRAM the coder server needs to start: the weights plus ~4 GB of KV cache and compute buffers at 64K context. */

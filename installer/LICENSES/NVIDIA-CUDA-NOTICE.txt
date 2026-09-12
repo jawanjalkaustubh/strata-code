@@ -1,0 +1,10 @@
+NVIDIA CUDA runtime libraries
+Bundled as runtime\llama.cpp\cudart64_12.dll, cublas64_12.dll, cublasLt64_12.dll.
+
+These files are part of the NVIDIA CUDA Toolkit and are redistributed under the
+NVIDIA CUDA Toolkit End User License Agreement, which permits redistribution of
+the listed runtime libraries with applications that use them:
+https://docs.nvidia.com/cuda/eula/index.html
+
+They require an NVIDIA GPU and a driver that supports CUDA 12 (528 or newer).
+NVIDIA and CUDA are trademarks of NVIDIA Corporation.
