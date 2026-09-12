@@ -432,3 +432,41 @@ Transcript: the same "inspect and suggest" prompt in the new advisory mode. The 
 Replay on the fixture with the coder resident: direct mode, 10 inspection calls, budget tripped, tools-off turn produced six concrete file:line findings (the planted `average()` divisor bug first), 8 s total, zero edits.
 
 Note for the user: the app's workspace is `D:\AntiGravity`, which contains the `local-code-studio` mirror, so every search sees two copies of the project. Opening `D:\AntiGravity\strata` as the workspace halves the noise.
+
+---
+
+## Part 10 — Coder server lifecycle and the Ollama runner mix-up (applied 2026-09-12)
+
+Reported: *"sometimes the server launches after a minute or so, not very stable; Ctrl+C doesn't close it; it should close when the app closes."*
+
+### What was actually happening
+
+| Evidence | Meaning |
+|---|---|
+| `tasklist` showed `llama-server.exe` with 81 MB RSS, 91 min uptime, never answering | It was **Ollama's own runner** (`%LOCALAPPDATA%\Programs\Ollama\lib\ollama\llama-server.exe --port 52437`) serving `qwen3-vl:30b-a3b-instruct` (22 GB) for the photo project. The engine matched llama-server by image name, concluded "our coder is loading", refused to start a real one, and every turn waited 90 s for it. The coder only started once Ollama's runner exited - "after a minute or so". |
+| Windows fault event 22:04, `0xc0000409` in `ucrtbase.dll` | A crash - of **Ollama's** runner, loading the 22 GB vision model beside the resident coder. Same root: two apps, one 30 GB card, 31 GB of system RAM to spill into. |
+| Pre-flight guard + auto-start both called `releaseOllamaVram()` | Strata evicted the photo app's model at every start; that app reloaded it on next use beside the coder; repeat. The ping-pong is the instability. |
+| Coder launched via `cmd /c start` into a console | The app had no handle on it: it outlived the app, Ctrl+C in that console did nothing useful, a relaunch could not tell it from Ollama's runner. |
+
+### Changes
+
+- **Identification by command line.** `findCoderServerPids()` matches `--port 8080` on the process command line (PowerShell CIM, ~170 ms, cached with the 10 s probe). Ollama's runners are excluded by construction.
+- **The app owns the coder server.** `startCoderServer()` spawns the launch script as a child (`powershell -NonInteractive -File …`) with stdout/stderr in `%APPDATA%\StrataCode-v1\coder-server.log`, records the PID in `coder-server.pid`, and `before-quit` kills the process tree synchronously. A server found already running on the port (from the `.bat`, or a crashed previous instance) is adopted and stopped on quit too.
+- **Foreign tenants are never evicted automatically.** `isOurModel()` compares Ollama's resident models with Strata's configured slots; anything else is `foreignOllama`. `releaseOllamaVram()` skips those unless called with `includeForeign` - which only the user-initiated **Free GPU** action does. When a foreign model leaves less than the coder needs (`coderServerNeedMiB` = GGUF size + 4 GB ≈ 28 GB), the status shows **coder blocked** and a run is refused with a clear message instead of a 90 s wait or a spill.
+- **Status bar**: coder up / loading / blocked / offline with tooltips (log path, who holds the GPU), **Free GPU** when blocked, **stop** when up; Ollama segment marks "other app" tenants.
+- **Arbiter wait is visible**: a notice every 15 s while a genuinely loading coder is awaited.
+
+### Verified live
+
+| Scenario | Result |
+|---|---|
+| Launch with `qwen3-vl:30b-a3b-instruct` resident (13 GB free, 28 GB needed) | Window up, no coder spawned, log: *"Not started: … (another app) holds the GPU"*. No hang. |
+| GPU freed, relaunch | App spawned the coder as its child (pid file written, log receiving llama-server output), `/health` 503 "Loading model" then healthy at 64K context in ~45 s. Exactly one start marker in the log. |
+| Close the window normally | Coder process gone **669 ms** after close, port released, VRAM back to 2.4 GB baseline, pid file removed, Electron fully exited. |
+
+Not verified by clicking: the **Free GPU** and **stop** buttons themselves (their IPC handlers and the eviction/start path they call were exercised directly).
+
+### Facts worth keeping in mind
+
+- This machine has **31 GB of system RAM**. A VRAM spill has nowhere to go; the coder's 23 GB GGUF cannot even stay in the page cache beside a 22 GB Ollama model, so each coder start re-reads it from disk (~40 s).
+- Strata Code (coder, ~28 GB) and Strata Photo (`qwen3-vl`, 22 GB) cannot both hold a model. Whichever app takes the GPU, the other reloads on next use. The cleanest way to make that automatic is to serve the coder through Ollama as well (`ollama pull` of a Qwen3-Coder GGUF, ~19 GB), so one runtime swaps models on demand; the cost is the 64K-context / 237 tok/s tuning of the dedicated server.

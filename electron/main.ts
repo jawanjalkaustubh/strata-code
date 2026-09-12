@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { exec, execFile, execSync, spawn } from 'child_process';
+import { exec, execFile, execFileSync, execSync, spawn, ChildProcess } from 'child_process';
 import { fileURLToPath } from 'url';
 import { AgentEngine } from './agent';
 
@@ -356,54 +356,150 @@ process.on('uncaughtException', (err: any) => {
  * app "hang on open". It is now deferred until the renderer reports
  * did-finish-load, plus a short grace period so the UI is interactive first.
  */
+// =============================================================================
+// CODER SERVER LIFECYCLE
+//
+// The coder llama-server is a child of this app: spawned here with its output
+// in a log file, its PID recorded, and killed when the app quits. Before this
+// it was launched through `cmd /c start` into a console window the app then
+// knew nothing about - it outlived the app, Ctrl+C in that window did nothing
+// useful, and a relaunch could not tell its own server from Ollama's runner.
+// =============================================================================
+const CODER_SCRIPT = 'C:\\AI_dev\\llama.cpp\\launch-server-8080.ps1';
+let coderChild: ChildProcess | null = null;
+const coderPidFile = () => path.join(app.getPath('userData'), 'coder-server.pid');
+const coderLogFile = () => path.join(app.getPath('userData'), 'coder-server.log');
+
+function killTreeSync(pid: number) {
+  try {
+    execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore', timeout: 8000, windowsHide: true });
+  } catch {}
+}
+
+/** PIDs of every llama-server on the coder port, synchronously (for quit). */
+function coderPortPidsSync(): number[] {
+  try {
+    const script = "Get-CimInstance Win32_Process -Filter \"Name='llama-server.exe'\" | Where-Object { $_.CommandLine -match '--port 8080( |$)' } | Select-Object -ExpandProperty ProcessId";
+    const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf-8', timeout: 6000, windowsHide: true });
+    return String(out).split(/\r?\n/).map(l => parseInt(l.trim(), 10)).filter(n => Number.isFinite(n));
+  } catch {
+    return [];
+  }
+}
+
+/** Kill our child, any server left by a previous app instance, and anything else on the coder port. */
+async function stopCoderServer(reason: string): Promise<number[]> {
+  const killed: number[] = [];
+  const own = coderChild?.pid;
+  if (own) { killTreeSync(own); killed.push(own); }
+  coderChild = null;
+  try {
+    const stale = parseInt(fs.readFileSync(coderPidFile(), 'utf-8').trim(), 10);
+    if (Number.isFinite(stale) && !killed.includes(stale)) { killTreeSync(stale); killed.push(stale); }
+  } catch {}
+  try { fs.unlinkSync(coderPidFile()); } catch {}
+  try {
+    for (const pid of await agent.findCoderServerPids()) {
+      if (!killed.includes(pid)) { killTreeSync(pid); killed.push(pid); }
+    }
+  } catch {}
+  if (killed.length) console.log(`[Coder Server] Stopped (${reason}): pid ${killed.join(', ')}`);
+  agent.probeLocalEngines(true).catch(() => {});
+  return killed;
+}
+
+/** Quit-time variant: no async work, the process is exiting. */
+function stopCoderServerSync(reason: string) {
+  const own = coderChild?.pid;
+  if (own) killTreeSync(own);
+  coderChild = null;
+  try {
+    const stale = parseInt(fs.readFileSync(coderPidFile(), 'utf-8').trim(), 10);
+    if (Number.isFinite(stale) && stale !== own) killTreeSync(stale);
+  } catch {}
+  try { fs.unlinkSync(coderPidFile()); } catch {}
+  // Servers started outside this app (the .bat, a previous crashed instance)
+  // sit on the same port and are ours by definition.
+  for (const pid of coderPortPidsSync()) {
+    if (pid !== own) killTreeSync(pid);
+  }
+  console.log(`[Coder Server] Stopped (${reason})`);
+}
+
+/**
+ * Starts the coder server as a child of this app. Returns false when it was
+ * already up/loading, when the launch script is missing, or when another
+ * app's model leaves too little VRAM (the status bar then offers "Free GPU").
+ */
+async function startCoderServer(reason: string): Promise<boolean> {
+  if (!fs.existsSync(CODER_SCRIPT)) {
+    console.log('[Coder Server] Launch script not found: ' + CODER_SCRIPT);
+    return false;
+  }
+  const status = await agent.probeLocalEngines(true);
+  if (status.llamaServer.up || status.llamaServer.loading) {
+    // Adopt a server from a previous instance so quit can stop it.
+    if (status.llamaServer.pid && !coderChild) {
+      try { fs.writeFileSync(coderPidFile(), String(status.llamaServer.pid)); } catch {}
+    }
+    console.log('[Coder Server] Already ' + (status.llamaServer.up ? 'up' : 'loading') + '; not starting another.');
+    return false;
+  }
+  if (status.coderBlockedBy) {
+    console.log(`[Coder Server] Not started: ${status.coderBlockedBy} (another app) holds the GPU. Use "Free GPU" in the status bar.`);
+    return false;
+  }
+  // Our own leftover Ollama model (e.g. the architect from a local-only run)
+  // may still be resident. Evicting it only costs us a reload later.
+  try {
+    const freed = await agent.releaseOllamaVram(false);
+    if (freed.length) {
+      console.log(`[Coder Server] Unloaded ${freed.join(', ')} from Ollama first.`);
+      await new Promise(r => setTimeout(r, 2500));
+    }
+  } catch {}
+
+  let logFd: number | undefined;
+  try {
+    fs.mkdirSync(path.dirname(coderLogFile()), { recursive: true });
+    logFd = fs.openSync(coderLogFile(), 'a');
+    fs.writeSync(logFd, `\n===== ${new Date().toISOString()} start (${reason}) =====\n`);
+  } catch {}
+
+  console.log(`[Coder Server] Starting (${reason}) -> ${coderLogFile()}`);
+  agent.markCoderServerStarting();
+  // powershell -NonInteractive: the script's "Press Enter to exit" branches
+  // fail fast instead of waiting on a console that does not exist.
+  const child = spawn(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', CODER_SCRIPT],
+    { stdio: ['ignore', logFd ?? 'ignore', logFd ?? 'ignore'], windowsHide: true, detached: false }
+  );
+  coderChild = child;
+  try { fs.writeFileSync(coderPidFile(), String(child.pid)); } catch {}
+  child.on('exit', (code) => {
+    console.log(`[Coder Server] Exited with code ${code}`);
+    if (coderChild === child) coderChild = null;
+    try { if (logFd !== undefined) fs.closeSync(logFd); } catch {}
+    agent.probeLocalEngines(true).catch(() => {});
+  });
+  child.on('error', (err) => {
+    console.warn('[Coder Server] Spawn failed:', err.message);
+    if (coderChild === child) coderChild = null;
+  });
+  return true;
+}
+
 function startCoderServerIfDown() {
   fetch('http://127.0.0.1:8080/health', { signal: AbortSignal.timeout(1200) })
     .then(res => {
       if (!res.ok) throw new Error(`health ${res.status}`);
+      // Up already (a previous instance or the .bat): record it so quit stops it.
+      agent.probeLocalEngines(true).then(st => {
+        if (st.llamaServer.pid) { try { fs.writeFileSync(coderPidFile(), String(st.llamaServer.pid)); } catch {} }
+      }).catch(() => {});
     })
-    .catch(async () => {
-      const serverScript = 'C:\\AI_dev\\llama.cpp\\launch-server-8080.ps1';
-      if (fs.existsSync(serverScript)) {
-        // A server that is still loading has not bound the port yet, so the
-        // launch script's port guard lets a second one start beside it.
-        // Every app relaunch during a 40 s load was spawning another server.
-        try {
-          const status = await agent.probeLocalEngines(true);
-          if (status.llamaServer.up || status.llamaServer.loading) {
-            console.log('[Strata Code] A llama-server process already exists (loading or up); not starting another.');
-            return;
-          }
-        } catch {}
-        // Ollama may still be holding a 17 GB model from the last run (it
-        // keeps models resident for minutes). Starting a 23 GB coder beside
-        // it oversubscribes the card and wedges the load. Evict first.
-        try {
-          const freed = await agent.releaseOllamaVram();
-          if (freed.length) {
-            console.log(`[Strata Code] Unloaded ${freed.join(', ')} from Ollama before starting the coder server.`);
-            await new Promise(r => setTimeout(r, 2500));
-          }
-        } catch {}
-        console.log('[Strata Code] Local llama-server (Port 8080) is offline. Auto-starting...');
-        // In its own console window, exactly like run-strata-code.bat did.
-        // Spawning the script with stdio:'ignore' gave llama-server no stdout
-        // to log to, and it exited immediately on Windows - the auto-start
-        // "ran" but never produced a server.
-        // Verbatim command line: Node's own Windows argument quoting wrapped
-        // the pre-quoted title in a second layer of quotes, and `start`
-        // silently did nothing - the log said "Auto-starting..." and no
-        // process ever appeared.
-        const commandLine = `/c start "Llama Server - Port 8080" powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${serverScript}"`;
-        agent.markCoderServerStarting();
-        const child = spawn('cmd.exe', [commandLine], {
-          detached: true,
-          stdio: 'ignore',
-          windowsHide: true,
-          windowsVerbatimArguments: true
-        });
-        child.unref();
-      }
-    });
+    .catch(() => startCoderServer('app-start').catch(err => console.warn('[Coder Server] start failed:', err?.message)));
 }
 
 app.whenReady().then(async () => {
@@ -446,6 +542,11 @@ app.on('before-quit', () => {
   } catch {
     // Safe teardown
   }
+  // The coder server lives and dies with the app. Synchronous on purpose:
+  // the process is about to exit and an async kill would be abandoned.
+  try {
+    stopCoderServerSync('app-quit');
+  } catch {}
 });
 
 // Window controls
@@ -904,9 +1005,32 @@ ipcMain.handle('provider:save-config', async (_e, config: any) => {
 // arbiter and rendered nowhere.
 ipcMain.handle('engine:status', async () => {
   try {
-    return { success: true, status: await agent.probeLocalEngines() };
+    const status = await agent.probeLocalEngines();
+    return { success: true, status: { ...status, coderManaged: coderChild !== null, coderLog: coderLogFile() } };
   } catch (err: any) {
     return { success: false, error: err.message, status: null };
+  }
+});
+
+// User-initiated only: evict everything from Ollama (including another app's
+// model) and start the coder server.
+ipcMain.handle('engine:take-gpu', async () => {
+  try {
+    const freed = await agent.releaseOllamaVram(true);
+    if (freed.length) await new Promise(r => setTimeout(r, 2500));
+    const started = await startCoderServer('take-gpu');
+    return { success: true, freed, started };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('engine:stop-coder', async () => {
+  try {
+    const killed = await stopCoderServer('user');
+    return { success: true, killed };
+  } catch (err: any) {
+    return { success: false, error: err.message };
   }
 });
 

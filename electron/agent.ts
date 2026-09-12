@@ -103,9 +103,13 @@ export interface HybridPlan {
 /** What is actually resident on the GPU right now. */
 export interface LocalEngineStatus {
   checkedAt: number;
-  /** `loading`: the llama-server process exists but is not answering yet - it is already holding VRAM. */
-  llamaServer: { up: boolean; loading?: boolean; alias?: string; nCtx?: number };
+  /** `loading`: OUR coder process (the one on the coder port) exists but is not answering yet - it already holds VRAM. */
+  llamaServer: { up: boolean; loading?: boolean; alias?: string; nCtx?: number; pid?: number };
   ollamaLoaded: { name: string; vramBytes: number }[];
+  /** Ollama models that none of Strata's configured slots refer to - another app (or a manual `ollama run`) loaded them. Never evicted automatically. */
+  foreignOllama: { name: string; vramBytes: number }[];
+  /** Set when the coder server is down and a foreign Ollama model leaves too little VRAM to start it. */
+  coderBlockedBy?: string;
   gpu?: { totalMiB: number; usedMiB: number; freeMiB: number };
 }
 
@@ -546,24 +550,26 @@ export class AgentEngine {
       const status: LocalEngineStatus = {
         checkedAt: Date.now(),
         llamaServer: { up: false },
-        ollamaLoaded: []
+        ollamaLoaded: [],
+        foreignOllama: []
       };
 
-      const [props, ps, gpu, serverProcess] = await Promise.all([
+      const [props, ps, gpu, coderPids] = await Promise.all([
         this.fetchJson(`${this.localServerBase}/props`, 1500, { Authorization: `Bearer ${this.localApiKey()}` }),
         this.fetchJson('http://127.0.0.1:11434/api/ps'),
         this.readGpuMemory(),
-        this.llamaServerProcessExists()
+        this.findCoderServerPids()
       ]);
 
-      // A llama-server that is still loading its model does not answer /props,
-      // but it already owns most of the card. Treating "not answering" as
-      // "nothing resident" is how a 27B Ollama model got loaded on top of a
-      // half-loaded 23 GB coder and froze the desktop. The "just launched"
-      // window covers the seconds between spawning the launch script and the
-      // process becoming visible - a prompt sent right after app start used
-      // to slip through that gap.
-      if (!props && (serverProcess || Date.now() < this.coderStartingUntil)) {
+      // A coder server that is still loading its model does not answer /props,
+      // but it already owns most of the card. The process is identified by
+      // its command line (`--port 8080`), NOT by image name: Ollama runs its
+      // own `llama-server.exe` for every model it serves, and matching on the
+      // name made the engine believe the coder was "loading" whenever Ollama
+      // had anything resident - so the coder was never started and every
+      // turn waited 90 s for a server that did not exist.
+      if (coderPids.length) status.llamaServer.pid = coderPids[0];
+      if (!props && (coderPids.length || Date.now() < this.coderStartingUntil)) {
         status.llamaServer.loading = true;
       }
 
@@ -584,9 +590,21 @@ export class AgentEngine {
           name: String(m.name || m.model || ''),
           vramBytes: Number(m.size_vram || 0)
         })).filter((m: any) => m.name);
+        status.foreignOllama = status.ollamaLoaded.filter(m => !this.isOurModel(m.name));
       }
 
       status.gpu = gpu;
+
+      // Can the coder even start? A foreign tenant (another app's model) that
+      // leaves less than the coder needs blocks it - and is never evicted
+      // without the user asking.
+      if (!status.llamaServer.up && !status.llamaServer.loading && status.foreignOllama.length && gpu) {
+        const needMiB = this.coderServerNeedMiB();
+        if (gpu.freeMiB < needMiB) {
+          status.coderBlockedBy = status.foreignOllama.map(m => m.name).join(', ');
+        }
+      }
+
       this.engineStatus = status;
       return status;
     })();
@@ -606,16 +624,76 @@ export class AgentEngine {
     this.engineStatus = null; // force the next probe to see it
   }
 
-  /** True when a llama-server process is running on this machine (answering or not). */
-  private llamaServerProcessExists(): Promise<boolean> {
-    if (process.platform !== 'win32') return Promise.resolve(false);
+  /** Port the coder server listens on, from the configured base URL (default 8080). */
+  coderServerPort(): number {
+    const m = this.localServerBase.match(/:(\d+)(?:\/|$)/);
+    return m ? parseInt(m[1], 10) : 8080;
+  }
+
+  /** Path of the coder GGUF the launch script will pick, if it exists. */
+  static CODER_MODEL_DIR = 'C:\\AI_dev\\models\\qwen3-coder';
+  coderModelPath(): string | null {
+    try {
+      const dir = AgentEngine.CODER_MODEL_DIR;
+      if (!fs.existsSync(dir)) return null;
+      const gguf = fs.readdirSync(dir).find(f => /\.gguf$/i.test(f));
+      return gguf ? path.join(dir, gguf) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** VRAM the coder server needs to start: the weights plus ~4 GB of KV cache and compute buffers at 64K context. */
+  coderServerNeedMiB(): number {
+    try {
+      const p = this.coderModelPath();
+      if (p) return Math.round(fs.statSync(p).size / (1024 * 1024)) + 4096;
+    } catch {}
+    return 26000;
+  }
+
+  /** True when `name` is one of the models Strata itself is configured to use (so evicting it only costs Strata a reload). */
+  isOurModel(name: string): boolean {
+    const n = (name || '').toLowerCase();
+    if (!n) return false;
+    const c = this.providerConfig;
+    const ours = [c.codingModel, c.generalModel, c.hybridArchitectModel, c.hybridWorkerModel, c.ollamaModel]
+      .filter(Boolean)
+      .map(s => String(s).toLowerCase());
+    // Ollama reports "name:tag"; a configured "name" without a tag matches its ":latest".
+    return ours.some(o => o === n || `${o}:latest` === n || o === n.replace(/:latest$/, ''));
+  }
+
+  /**
+   * PIDs of llama-server processes that belong to the coder port. Ollama's own
+   * runners (also named llama-server.exe) listen on random ports and are
+   * excluded by the command-line filter.
+   */
+  findCoderServerPids(): Promise<number[]> {
+    if (process.platform !== 'win32') return Promise.resolve([]);
+    const port = this.coderServerPort();
+    const script = `Get-CimInstance Win32_Process -Filter "Name='llama-server.exe'" | ForEach-Object { "$($_.ProcessId)|$($_.CommandLine)" }`;
     return new Promise((resolve) => {
       try {
-        execFile('tasklist', ['/FI', 'IMAGENAME eq llama-server.exe', '/NH'], { timeout: 2500, windowsHide: true }, (err: any, stdout: any) => {
-          resolve(!err && /llama-server\.exe/i.test(String(stdout || '')));
-        });
+        execFile(
+          'powershell.exe',
+          ['-NoProfile', '-NonInteractive', '-Command', script],
+          { timeout: 4000, windowsHide: true },
+          (err: any, stdout: any) => {
+            if (err) return resolve([]);
+            const pids: number[] = [];
+            for (const line of String(stdout || '').split(/\r?\n/)) {
+              const idx = line.indexOf('|');
+              if (idx < 0) continue;
+              const pid = parseInt(line.slice(0, idx), 10);
+              const cmd = line.slice(idx + 1);
+              if (Number.isFinite(pid) && new RegExp(`--port\\s+${port}(\\s|$)`).test(cmd)) pids.push(pid);
+            }
+            resolve(pids);
+          }
+        );
       } catch {
-        resolve(false);
+        resolve([]);
       }
     });
   }
@@ -650,12 +728,21 @@ export class AgentEngine {
     return Math.round((bytes / (1024 * 1024)) * 1.02) + 1536;
   }
 
-  /** Ask Ollama to evict its loaded models immediately (keep_alive: 0). */
-  async releaseOllamaVram(): Promise<string[]> {
+  /**
+   * Ask Ollama to evict loaded models immediately (keep_alive: 0).
+   *
+   * Only Strata's own models by default. A model another app loaded (the
+   * photo editor's vision model, a manual `ollama run`) is left alone:
+   * evicting it silently at every app start and run start was one half of a
+   * ping-pong that wedged both apps. `includeForeign` is for the explicit
+   * "Free GPU" action the user clicks.
+   */
+  async releaseOllamaVram(includeForeign = false): Promise<string[]> {
     const status = await this.probeLocalEngines(true);
     const freed: string[] = [];
     for (const loaded of status.ollamaLoaded) {
       if (!loaded.vramBytes) continue;
+      if (!includeForeign && !this.isOurModel(loaded.name)) continue;
       try {
         await fetch('http://127.0.0.1:11434/api/generate', {
           method: 'POST',
@@ -688,10 +775,17 @@ export class AgentEngine {
     // Case 0: the coder server is mid-load. It owns the card already; the only
     // safe move is to wait for it - never to load anything else beside it.
     if (!status.llamaServer.up && status.llamaServer.loading) {
-      const cameUp = await this.waitForLlamaServer(90000);
+      let lastTick = 0;
+      const cameUp = await this.waitForLlamaServer(90000, (elapsed) => {
+        // The wait used to be silent; the app looked hung for up to 90 s.
+        if (elapsed - lastTick >= 15000 || lastTick === 0) {
+          lastTick = elapsed;
+          this.notice(`⏳ Coder server is still loading its model (${Math.round(elapsed / 1000)} s) — waiting for it rather than loading a second model beside it.`);
+        }
+      });
       status = await this.probeLocalEngines(true);
       if (!cameUp && !status.llamaServer.up) {
-        throw new Error('The llama-server on port 8080 has been loading for over 90 seconds and is still not answering. It may be stuck (VRAM spilled into system RAM). Stop it with C:\\AI_dev\\llama.cpp\\stop-server-8080.bat and start it again, then retry.');
+        throw new Error(`The coder server on port ${this.coderServerPort()} has been loading for over 90 seconds and is still not answering. It is probably stuck with its VRAM spilled into system RAM. Use "Free GPU" in the status bar (or restart the app, which stops and restarts it).`);
       }
       const serverModel = status.llamaServer.alias || 'Qwen3-Coder-30B-A3B-Instruct';
       if (!wantsServer) {
@@ -2300,20 +2394,38 @@ WORKING METHOD (follow exactly):
     // state - evict Ollama first, then go.
     // =========================================================================
     if (!this.providerConfig.disableVramArbiter) {
+      let blockedMessage: string | null = null;
       try {
         const status = await this.probeLocalEngines(true);
-        const ollamaMiB = status.ollamaLoaded.reduce((a, m) => a + m.vramBytes, 0) / (1024 * 1024);
-        if ((status.llamaServer.up || status.llamaServer.loading) && ollamaMiB > 512) {
-          const freeMiB = status.gpu?.freeMiB;
-          const dangerous = ollamaMiB > 8192 || (typeof freeMiB === 'number' && freeMiB < 3072);
-          if (dangerous) {
-            const names = status.ollamaLoaded.map(m => m.name).join(', ');
-            const freed = await this.releaseOllamaVram();
-            notice(`🧯 VRAM guard: llama-server (${status.llamaServer.alias || (status.llamaServer.loading ? 'still loading' : 'coder model')}) and Ollama (${names}) were both resident on the GPU — that is the configuration that freezes the desktop (VRAM spilling into system RAM). ${freed.length ? `Unloaded ${freed.join(', ')} from Ollama before starting.` : 'Could not unload Ollama automatically; stop one of them manually.'}`);
-          }
+        const ownMiB = status.ollamaLoaded.filter(m => this.isOurModel(m.name)).reduce((a, m) => a + m.vramBytes, 0) / (1024 * 1024);
+        const foreignMiB = status.foreignOllama.reduce((a, m) => a + m.vramBytes, 0) / (1024 * 1024);
+        const coderResident = status.llamaServer.up || status.llamaServer.loading;
+        const freeMiB = status.gpu?.freeMiB;
+
+        // Our own Ollama model beside the coder: evict it, it only costs us a reload.
+        if (coderResident && ownMiB > 512 && (ownMiB > 8192 || (typeof freeMiB === 'number' && freeMiB < 3072))) {
+          const freed = await this.releaseOllamaVram(false);
+          if (freed.length) notice(`🧯 VRAM guard: unloaded ${freed.join(', ')} from Ollama — it was resident beside the coder server, which is the configuration that freezes the desktop.`);
+        }
+
+        // Another app's model beside the coder, or blocking the coder from
+        // starting: never evict it silently. Say so and stop before spending
+        // anything - a run in that state crawls at a few tokens/sec and can
+        // crash either server.
+        const foreignNames = status.foreignOllama.map(m => `${m.name} (${(m.vramBytes / 1024 ** 3).toFixed(1)} GB)`).join(', ');
+        if (coderResident && foreignMiB > 4096 && typeof freeMiB === 'number' && freeMiB < 3072) {
+          blockedMessage = `The GPU is oversubscribed: the coder server and ${foreignNames} from another app are both resident, so generation would crawl and either server may crash. Not starting this run. Close the model in the other app, or click "Free GPU" in the status bar to unload it (that app will reload it when it needs it).`;
+        } else if (!coderResident && status.coderBlockedBy && this.isPort8080Model(workerModel)) {
+          blockedMessage = `The coder server is not running and cannot start: ${foreignNames} from another app holds the GPU (${typeof freeMiB === 'number' ? (freeMiB / 1024).toFixed(1) : '?'} GB free, ~${(this.coderServerNeedMiB() / 1024).toFixed(0)} GB needed). Close the model in the other app, or click "Free GPU" in the status bar.`;
         }
       } catch {
         // Pre-flight is best-effort.
+      }
+      if (blockedMessage) {
+        notice(`🛑 ${blockedMessage}`);
+        this.send('agent:error', blockedMessage);
+        this.send('agent:status', { state: 'idle' });
+        return;
       }
     }
 

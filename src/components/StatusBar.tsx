@@ -3,8 +3,15 @@ import { Cpu, HardDrive, Zap, CircleAlert } from 'lucide-react';
 
 export interface EngineStatus {
   checkedAt: number;
-  llamaServer: { up: boolean; alias?: string; nCtx?: number };
+  llamaServer: { up: boolean; loading?: boolean; alias?: string; nCtx?: number; pid?: number };
   ollamaLoaded: { name: string; vramBytes: number }[];
+  /** Ollama models another app loaded; Strata never evicts these on its own. */
+  foreignOllama?: { name: string; vramBytes: number }[];
+  /** Set when the coder is down and a foreign model leaves too little VRAM to start it. */
+  coderBlockedBy?: string;
+  /** True when this app instance spawned the coder server and will stop it on quit. */
+  coderManaged?: boolean;
+  coderLog?: string;
   gpu?: { totalMiB: number; usedMiB: number; freeMiB: number };
 }
 
@@ -76,24 +83,79 @@ const StatusBarInner: React.FC<{ workspace?: string }> = ({ workspace }) => {
   };
 
   const serverUp = status?.llamaServer.up;
+  const serverLoading = !serverUp && status?.llamaServer.loading;
+  const blockedBy = !serverUp && !serverLoading ? status?.coderBlockedBy : undefined;
+  const foreign = status?.foreignOllama || [];
+
+  const [busy, setBusy] = useState<'take' | 'stop' | null>(null);
+  const takeGpu = useCallback(async () => {
+    const api = (window as any).api;
+    if (!api?.takeGpu || busy) return;
+    setBusy('take');
+    try { await api.takeGpu(); } catch {}
+    setBusy(null);
+    poll();
+  }, [busy, poll]);
+  const stopCoder = useCallback(async () => {
+    const api = (window as any).api;
+    if (!api?.stopCoderServer || busy) return;
+    setBusy('stop');
+    try { await api.stopCoderServer(); } catch {}
+    setBusy(null);
+    poll();
+  }, [busy, poll]);
+
+  const coderLabel = serverUp
+    ? (status?.llamaServer.alias || 'llama-server')
+    : serverLoading ? 'coder loading…'
+    : blockedBy ? 'coder blocked'
+    : 'coder offline';
+  const coderTitle = serverUp
+    ? `Coder server on :8080${status?.coderManaged ? ' — started by this app; stops when the app closes' : ' — started outside the app; stops when the app closes'}${status?.coderLog ? `\nLog: ${status.coderLog}` : ''}`
+    : serverLoading ? 'The coder server is reading its model into VRAM (typically 10–60 s). Prompts sent now wait for it.'
+    : blockedBy ? `Cannot start: ${blockedBy} (loaded by another app) holds the GPU. "Free GPU" unloads it and starts the coder; the other app reloads its model when it next needs it.`
+    : 'No coder server. It starts automatically on launch when the GPU is free.';
 
   return (
     <div className="h-7 shrink-0 flex items-center gap-4 px-3 bg-studio-surface border-t border-studio-border text-micro font-mono text-studio-muted select-none">
       {/* --- coder engine --- */}
-      <div className="flex items-center gap-1.5 min-w-0">
+      <div className="flex items-center gap-1.5 min-w-0" title={coderTitle}>
         <span
           className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-            serverUp ? 'bg-state-ok-400 animate-pulse-glow' : 'bg-studio-subtle'
+            serverUp ? 'bg-state-ok-400 animate-pulse-glow'
+            : serverLoading ? 'bg-state-warn-400 animate-pulse'
+            : blockedBy ? 'bg-state-danger-400'
+            : 'bg-studio-subtle'
           }`}
         />
-        <Cpu size={11} className={serverUp ? 'text-role-worker-400' : 'text-studio-subtle'} />
-        <span className={`truncate ${serverUp ? 'text-studio-text' : 'text-studio-subtle'}`}>
-          {serverUp ? (status?.llamaServer.alias || 'llama-server') : 'llama-server offline'}
+        <Cpu size={11} className={serverUp ? 'text-role-worker-400' : serverLoading ? 'text-state-warn-400' : blockedBy ? 'text-state-danger-400' : 'text-studio-subtle'} />
+        <span className={`truncate ${serverUp ? 'text-studio-text' : serverLoading ? 'text-state-warn-400' : blockedBy ? 'text-state-danger-400' : 'text-studio-subtle'}`}>
+          {coderLabel}
         </span>
         {serverUp && (
           <span className="text-studio-subtle shrink-0">
             :8080 · {fmtCtx(status?.llamaServer.nCtx)} ctx
           </span>
+        )}
+        {(blockedBy || (!serverUp && !serverLoading && foreign.length > 0)) && (
+          <button
+            onClick={takeGpu}
+            disabled={busy !== null}
+            className="ml-1 px-1.5 py-0.5 rounded-control border border-state-danger-500/40 bg-state-danger-500/10 text-state-danger-300 hover:bg-state-danger-500/20 disabled:opacity-50 shrink-0"
+            title={`Unload ${foreign.map(f => f.name).join(', ')} from Ollama and start the coder server`}
+          >
+            {busy === 'take' ? 'freeing…' : 'Free GPU'}
+          </button>
+        )}
+        {serverUp && (
+          <button
+            onClick={stopCoder}
+            disabled={busy !== null}
+            className="ml-1 px-1.5 py-0.5 rounded-control border border-studio-border text-studio-subtle hover:text-studio-text hover:bg-studio-panel disabled:opacity-50 shrink-0"
+            title="Stop the coder server and release its VRAM (it restarts on the next app launch, or via Free GPU)"
+          >
+            {busy === 'stop' ? 'stopping…' : 'stop'}
+          </button>
         )}
       </div>
 
@@ -131,11 +193,18 @@ const StatusBarInner: React.FC<{ workspace?: string }> = ({ workspace }) => {
       <span className="w-px h-3.5 bg-studio-border shrink-0" />
 
       {/* --- Ollama --- */}
-      <div className="flex items-center gap-1.5 shrink-0" title="Ollama models currently resident in VRAM">
-        <HardDrive size={11} className={ollamaGiB > 0.1 ? 'text-role-architect-400' : 'text-studio-subtle'} />
-        <span className={ollamaGiB > 0.1 ? 'text-studio-text' : 'text-studio-subtle'}>
+      <div
+        className="flex items-center gap-1.5 shrink-0"
+        title={
+          (status?.ollamaLoaded || []).length
+            ? `Resident in Ollama: ${status!.ollamaLoaded.map(m => `${m.name} (${(m.vramBytes / 1024 ** 3).toFixed(1)} GiB)`).join(', ')}${foreign.length ? `\nLoaded by another app: ${foreign.map(f => f.name).join(', ')}` : ''}`
+            : 'Ollama models currently resident in VRAM'
+        }
+      >
+        <HardDrive size={11} className={foreign.length ? 'text-state-warn-400' : ollamaGiB > 0.1 ? 'text-role-architect-400' : 'text-studio-subtle'} />
+        <span className={foreign.length ? 'text-state-warn-400' : ollamaGiB > 0.1 ? 'text-studio-text' : 'text-studio-subtle'}>
           {ollamaGiB > 0.1
-            ? `Ollama ${ollamaGiB.toFixed(1)} GiB · ${status?.ollamaLoaded.length}`
+            ? `Ollama ${ollamaGiB.toFixed(1)} GiB · ${status?.ollamaLoaded.length}${foreign.length ? ' · other app' : ''}`
             : 'Ollama idle'}
         </span>
       </div>

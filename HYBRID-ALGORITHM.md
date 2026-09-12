@@ -94,6 +94,8 @@ The architect receives the **actual evidence**: per-file diff summaries (+/- cou
 
 ## VRAM (the 30 GB constraint)
 
+> **2026-09-12:** the coder server is now a child of the app (started on launch when the GPU is free, killed on quit, log in ). It is identified by its  command line, never by image name - Ollama runs its own  per model. Models in Ollama that Strata is not configured to use belong to another app and are never evicted automatically; the status bar offers **Free GPU**. Details in  Part 10.
+
 llama-server with Qwen3-Coder at 64K context holds ~26 GB; `qwen3.8:27b` needs ~19 GB. They cannot co-reside, and Windows does not refuse — it spills to system memory and generation collapses. The arbiter (`resolveLocalWorker`) already re-routed the *worker*; it now routes the **architect** too. In practice:
 
 | Resident | Architect | Worker | Swaps |

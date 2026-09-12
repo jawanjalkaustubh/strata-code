@@ -91,6 +91,10 @@ contextBridge.exposeInMainWorld('api', {
 
   // Local Dual-Brain Provider Config (Ollama & llama-server)
   getEngineStatus: () => ipcRenderer.invoke('engine:status'),
+  // Explicit, user-initiated: unload every Ollama model (including another
+  // app's) and start the coder server. Never called automatically.
+  takeGpu: () => ipcRenderer.invoke('engine:take-gpu'),
+  stopCoderServer: () => ipcRenderer.invoke('engine:stop-coder'),
   getProviderConfig: () => ipcRenderer.invoke('provider:get-config'),
   saveProviderConfig: (config) => ipcRenderer.invoke('provider:save-config', config),
   openExternalUrl: (url) => ipcRenderer.invoke('shell:open-external', url),
