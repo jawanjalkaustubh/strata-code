@@ -2,11 +2,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Minus, Square, X, FolderOpen, Zap, Shield, Cpu, Info, Octagon, Columns, Code2, MessageSquare, 
   DownloadCloud, Terminal as TerminalIcon, Play, RefreshCw, Plus, Save, ChevronDown, Check, 
-  LogOut, HelpCircle, FileText, Sparkles, HardDrive
+  LogOut, HelpCircle, FileText, Sparkles, HardDrive, Heart
 } from 'lucide-react';
 import { DualBrainModal } from './DualBrainModal';
 import { TaskMode, SystemInfo, OllamaHealthStatus, HybridTier } from '../types';
 import { STRATA_ICON } from '../assets/logo';
+import { SUPPORT, openExternal } from '../support';
 
 export interface TitleBarProps {
   workspace: string;
@@ -388,6 +389,24 @@ const TitleBarInner: React.FC<TitleBarProps> = ({
 
             {openMenu === 'help' && (
               <div className="absolute top-full left-0 mt-1 w-60 bg-studio-surface border border-studio-border rounded-card shadow-2xl py-1 text-xs z-50 animate-in fade-in">
+                {/* Free for everyone; donations are voluntary (LICENSE section on donations). Opens support.json donateUrl. */}
+                <button
+                  onClick={() => {
+                    setOpenMenu(null);
+                    if (SUPPORT.donateUrl) openExternal(SUPPORT.donateUrl);
+                    else onOpenAbout();
+                  }}
+                  data-testid="help-donate"
+                  className="w-full flex items-center justify-between px-3 py-1.5 hover:bg-studio-panel text-slate-300 hover:text-white transition text-left cursor-pointer"
+                  title={SUPPORT.donateUrl ? SUPPORT.donateUrl : 'Strata Code is free. The donation page is being set up.'}
+                >
+                  <span className="flex items-center space-x-2">
+                    <Heart size={13} className="text-state-danger-400" />
+                    <span>{SUPPORT.donateLabel} (donate)</span>
+                  </span>
+                  <span className="text-micro text-slate-500">{SUPPORT.donateUrl ? 'Free' : 'soon'}</span>
+                </button>
+
                 <button
                   onClick={() => {
                     setOpenMenu(null);
