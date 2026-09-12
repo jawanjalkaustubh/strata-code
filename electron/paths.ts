@@ -34,8 +34,14 @@ function firstExisting(candidates: (string | undefined)[]): string | null {
 export function installRoot(): string {
   if (process.env.STRATA_INSTALL_ROOT && exists(process.env.STRATA_INSTALL_ROOT)) return process.env.STRATA_INSTALL_ROOT;
   if (app && app.isPackaged) return path.dirname(process.execPath);
-  // dev: dist-electron/main.js → project root
-  return path.resolve(__dirname, '..');
+  // dev (`electron .`): the folder holding package.json. Not __dirname - the
+  // main bundle is an ES module, where __dirname does not exist; the first
+  // version threw a ReferenceError here and the dev app silently never
+  // started its coder server.
+  if (app && typeof app.getAppPath === 'function') {
+    try { return app.getAppPath(); } catch {}
+  }
+  return process.cwd();
 }
 
 export function isPackaged(): boolean {
