@@ -93,7 +93,7 @@ $form.BackColor = [System.Drawing.Color]::FromArgb(20, 20, 24)
 $form.ForeColor = [System.Drawing.Color]::White
 
 # Try to set Form Icon
-$iconPath = Join-Path $SourceStrataDir "assets\strata.ico"
+$iconPath = Join-Path $SourceStrataDir "assets\strata-code-sc.ico"
 if (Test-Path $iconPath) {
     try {
         $form.Icon = New-Object System.Drawing.Icon($iconPath)
@@ -582,7 +582,7 @@ $btnInstall.Add_Click({
         }
 
         $vbsLauncher = Join-Path $dest "run-strata-code.vbs"
-        $iconFile = Join-Path $dest "assets\strata.ico"
+        $iconFile = Join-Path $dest "assets\strata-code-sc.ico"
 
         foreach ($dt in ($desktopPaths | Select-Object -Unique)) {
             if (Test-Path $dt) {

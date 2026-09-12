@@ -18,7 +18,7 @@ $VbsLauncher = Join-Path $TargetDir "run-strata-code.vbs"
 if (-not (Test-Path $VbsLauncher)) {
     $VbsLauncher = Join-Path $TargetDir "Launch-Strata.vbs"
 }
-$IconPath = Join-Path $TargetDir "assets\strata.ico"
+$IconPath = Join-Path $TargetDir "assets\strata-code-sc.ico"
 if (-not (Test-Path $IconPath)) {
     $IconPath = Join-Path $TargetDir "assets\icon.ico"
 }
