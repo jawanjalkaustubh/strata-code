@@ -298,7 +298,7 @@ function createWindow() {
     center: true,
     frame: false,
     title: 'Strata Code',
-    icon: path.join(__dirname, '../assets/strata.ico'),
+    icon: path.join(__dirname, '../assets/strata-code-sc.ico'),
     show: true,
     backgroundColor: '#0c0e14',
     webPreferences: {
