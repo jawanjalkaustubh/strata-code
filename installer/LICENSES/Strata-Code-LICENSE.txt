@@ -1,7 +1,6 @@
 Strata Code — Local Dual-Brain AI Coding Studio
 Copyright (c) 2026 Kaustubh Jawanjal. All rights reserved.
 
-This is a private tester build. Do not redistribute the package without the
-author's permission. Provided "AS IS", without warranty of any kind; the author
-is not liable for any damage arising from installation or use, including any
-file changes made by the AI agent inside a workspace you open.
+Use of this pre-release build is governed by the Tester License Agreement in
+EULA.md (shown and accepted in the installer and on first launch). It is a
+private tester build: do not redistribute without the author's permission.

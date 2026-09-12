@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { exec, execFile, execFileSync, execSync, spawn, ChildProcess } from 'child_process';
 import { fileURLToPath } from 'url';
+import { createHash } from 'crypto';
 import { AgentEngine } from './agent';
 import {
   coderLaunchScript, coderLaunchArgs, coderModelPath, coderConfig, defaultWorkspace, rememberWorkspace, runtimeDir, modelsDir, installRoot
@@ -909,7 +910,71 @@ ipcMain.handle('ollama:delete-model', async (_e, modelName: string) => {
 });
 
 // Agent control
+// =============================================================================
+// TESTER LICENSE AGREEMENT
+//
+// The agent modifies files and runs commands. Nothing runs until the tester has
+// accepted EULA.md - either in the installer (which records acceptance in
+// userData) or in the app's first-launch dialog. Acceptance is keyed to a hash
+// of the agreement text, so a changed agreement is shown again.
+// =============================================================================
+function agreementPath(): string {
+  return path.join(app.getAppPath(), 'EULA.md');
+}
+function agreementText(): string {
+  try { return fs.readFileSync(agreementPath(), 'utf-8').replace(/^﻿/, ''); } catch { return ''; }
+}
+function agreementVersion(text: string): string {
+  return createHash('sha256').update(text.replace(/\r/g, ''), 'utf8').digest('hex').slice(0, 16);
+}
+function acceptanceFile(): string {
+  return path.join(app.getPath('userData'), 'agreement.json');
+}
+function agreementState() {
+  const text = agreementText();
+  const version = text ? agreementVersion(text) : '';
+  let accepted = false;
+  let acceptedAt: string | undefined;
+  try {
+    const rec = JSON.parse(fs.readFileSync(acceptanceFile(), 'utf-8').replace(/^﻿/, ''));
+    accepted = !!version && rec?.version === version;
+    acceptedAt = rec?.acceptedAt;
+  } catch {}
+  return { text, version, accepted, acceptedAt, available: !!text };
+}
+
+ipcMain.handle('legal:get-agreement', async () => agreementState());
+
+ipcMain.handle('legal:accept', async () => {
+  const st = agreementState();
+  if (!st.available) return { success: false, error: 'Agreement text is missing from this build.' };
+  try {
+    fs.mkdirSync(path.dirname(acceptanceFile()), { recursive: true });
+    fs.writeFileSync(acceptanceFile(), JSON.stringify({
+      version: st.version,
+      acceptedAt: new Date().toISOString(),
+      acceptedIn: 'app',
+      appVersion: app.getVersion(),
+      user: os.userInfo().username,
+      machine: os.hostname()
+    }, null, 2));
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('legal:decline', async () => {
+  console.log('[Legal] Agreement declined; quitting.');
+  setTimeout(() => app.quit(), 200);
+  return { success: true };
+});
+
 ipcMain.handle('agent:start', async (_e, prompt: string, model: string, autoMode: boolean, taskMode: string = 'coding', editorContext?: any, images?: string[]) => {
+  const legal = agreementState();
+  if (legal.available && !legal.accepted) {
+    return { started: false, error: 'The Tester License Agreement has not been accepted. Accept it to use the agent.' };
+  }
   agent.run(prompt, model, autoMode, taskMode, editorContext, images);
   return { started: true };
 });

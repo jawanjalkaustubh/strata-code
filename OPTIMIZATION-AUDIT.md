@@ -496,3 +496,9 @@ Console, idempotent, resumable: system check (GPU/driver/RAM/disk) → Ollama vi
 | Defect found and fixed | `coder-config.json` written by PowerShell 5.1 carries a UTF-8 BOM; `JSON.parse` rejected it and the installer's context size was silently ignored. BOM is now stripped on read. |
 
 Not verified: a real end-to-end install on a machine without Ollama or the models (no such machine available); the download and winget paths were exercised only by URL/HEAD checks.
+
+### Addendum — Tester License Agreement (2026-09-12)
+
+`EULA.md` (repo root, shipped in the package root and inside `resources\app`) is enforced in two places: `Install.ps1` step 0 prints it and requires typing `I AGREE` (exit 2 otherwise; `-AcceptAgreement` for automation), recording `%APPDATA%\StrataCode-v1\agreement.json` keyed to a SHA-256 of the text; the app shows `AgreementModal` on first launch when no matching record exists (scroll-to-end → checkbox → Accept; Decline quits) and `agent:start` is refused in the main process until accepted.
+
+Verified: installer decline/accept/re-run against a throwaway AppData (correct exit codes, record written with the same hash the app computes, prompt skipped on re-run); in the app, the dialog appeared on a fresh launch and `agent:start` returned `started:false` before acceptance. The accept path was exercised by the user clicking Accept in the live app (record `acceptedIn: "app"`); during the same minutes the user also used **Free GPU** (evicted the photo app's vision model, coder started) and closed the app (coder killed) - the first real-world exercise of both. The scripted click-through was disturbed by that concurrent use and was not completed.

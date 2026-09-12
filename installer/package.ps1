@@ -51,7 +51,7 @@ if (Test-Path $pkgOut) { Remove-Item -Recurse -Force $pkgOut }
 # node_modules is excluded wholesale (main.js is fully bundled by Vite).
 $ignore = @(
     '^/node_modules', '^/src', '^/electron', '^/installer', '^/release', '^/backup-', '^/agent-leftovers-',
-    '^/\.git', '^/\.claude', '^/public', '^/index\.html$', '^/[^/]+\.md$', '^/[^/]+\.ps1$', '^/[^/]+\.bat$', '^/[^/]+\.vbs$',
+    '^/\.git', '^/\.claude', '^/public', '^/index\.html$', '^/(?!EULA\.md$)[^/]+\.md$', '^/[^/]+\.ps1$', '^/[^/]+\.bat$', '^/[^/]+\.vbs$',
     '^/[^/]+\.py$', '^/tsconfig\.json$', '^/vite\.config\.ts$', '^/tailwind\.config\.js$', '^/postcss\.config\.js$',
     '^/package-lock\.json$', '^/\.gitignore$', '^/strata-live-session\.md$', '^/[^/]+\.log$'
 )
@@ -90,6 +90,7 @@ Set-Content -Path (Join-Path $Stage "models\README.txt") -Value "The coder model
 Copy-Item (Join-Path $Root "installer\Install.ps1") (Join-Path $Stage "Install.ps1") -Force
 Copy-Item (Join-Path $Root "installer\Install.bat") (Join-Path $Stage "Install.bat") -Force
 Copy-Item (Join-Path $Root "installer\README.md") (Join-Path $Stage "README.md") -Force
+Copy-Item (Join-Path $Root "EULA.md") (Join-Path $Stage "EULA.md") -Force
 $lic = Join-Path $Stage "LICENSES"
 New-Item -ItemType Directory -Path $lic -Force | Out-Null
 Copy-Item (Join-Path $Root "installer\LICENSES\*") $lic -Force
@@ -99,7 +100,7 @@ Remove-Item (Join-Path $Stage "LICENSE"), (Join-Path $Stage "LICENSES.chromium.h
 Set-Content -Path (Join-Path $Stage "VERSION.txt") -Value "Strata Code $version`nBuilt $(Get-Date -Format s)`nCommit $(git rev-parse --short HEAD 2>$null)" -Encoding UTF8
 
 Step "5. Sanity"
-foreach ($must in @("Strata Code.exe", "resources\app\package.json", "resources\app\dist\index.html", "resources\app\dist-electron\main.js", "resources\app\dist-electron\preload.cjs", "runtime\llama.cpp\llama-server.exe", "runtime\llama.cpp\launch-server-8080.ps1", "Install.bat", "Install.ps1", "README.md")) {
+foreach ($must in @("Strata Code.exe", "resources\app\package.json", "resources\app\EULA.md", "resources\app\dist\index.html", "resources\app\dist-electron\main.js", "resources\app\dist-electron\preload.cjs", "runtime\llama.cpp\llama-server.exe", "runtime\llama.cpp\launch-server-8080.ps1", "Install.bat", "Install.ps1", "README.md", "EULA.md")) {
     if (-not (Test-Path (Join-Path $Stage $must))) { throw "missing from package: $must" }
 }
 if (Test-Path (Join-Path $Stage "resources\app\node_modules")) { throw "node_modules leaked into the package" }

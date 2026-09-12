@@ -25,7 +25,9 @@ param(
     [switch]$SkipOllama,
     [switch]$NoShortcuts,
     [switch]$NoLaunch,
-    [switch]$DryRun
+    [switch]$DryRun,
+    # Records acceptance of EULA.md without the interactive prompt (you must have read it).
+    [switch]$AcceptAgreement
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,6 +59,53 @@ Write-Host "  STRATA CODE - LOCAL DUAL-BRAIN CODING STUDIO - INSTALLER" -Foregro
 Write-Host "  Install folder: $Root" -ForegroundColor DarkGray
 if ($DryRun) { Write-Host "  DRY RUN: nothing will be downloaded or changed." -ForegroundColor Yellow }
 Write-Host ""
+
+# ---------------------------------------------------------------------------
+Step "0/6 Tester License Agreement"
+# ---------------------------------------------------------------------------
+# The app modifies files and runs commands; nothing is installed or run until
+# the agreement is accepted. Acceptance is recorded (keyed to a hash of the
+# text) where the app looks for it, so the app does not ask again.
+$EulaPath = Join-Path $Root "EULA.md"
+if (-not (Test-Path $EulaPath)) { Fail "EULA.md is missing next to this script. The zip is incomplete." }
+$eulaText = [IO.File]::ReadAllText($EulaPath, [Text.Encoding]::UTF8)
+$eulaNorm = $eulaText -replace "`r", ""
+$sha = [Security.Cryptography.SHA256]::Create()
+$eulaVersion = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($eulaNorm))) -replace "-", "").ToLower().Substring(0, 16)
+$AppData = Join-Path $env:APPDATA "StrataCode-v1"
+$acceptFile = Join-Path $AppData "agreement.json"
+$alreadyAccepted = $false
+try { if (Test-Path $acceptFile) { $rec = Get-Content $acceptFile -Raw | ConvertFrom-Json; $alreadyAccepted = ($rec.version -eq $eulaVersion) } } catch {}
+
+if ($alreadyAccepted) {
+    Log "Agreement version $eulaVersion already accepted on this machine." "Green"
+} elseif ($DryRun) {
+    Log "Would show EULA.md (version $eulaVersion) and require 'I AGREE'." "Yellow"
+} else {
+    if (-not $AcceptAgreement) {
+        Write-Host ""
+        Write-Host $eulaText
+        Write-Host ""
+        Write-Host "  You must accept the Tester License Agreement above to continue." -ForegroundColor Yellow
+        Write-Host "  It is also saved as EULA.md in this folder." -ForegroundColor DarkGray
+        $answer = Read-Host "  Type I AGREE to accept, or anything else to cancel"
+        if ($answer.Trim().ToUpper() -ne "I AGREE") {
+            Log "Agreement not accepted. Nothing was installed." "Yellow"
+            exit 2
+        }
+    }
+    $record = @{
+        version    = $eulaVersion
+        acceptedAt = (Get-Date).ToUniversalTime().ToString("o")
+        acceptedIn = $(if ($AcceptAgreement) { "installer (-AcceptAgreement)" } else { "installer (typed I AGREE)" })
+        user       = $env:USERNAME
+        machine    = $env:COMPUTERNAME
+    } | ConvertTo-Json
+    New-Item -ItemType Directory -Path $AppData -Force | Out-Null
+    [IO.File]::WriteAllText($acceptFile, $record, (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText((Join-Path $Root "agreement-accepted.json"), $record, (New-Object Text.UTF8Encoding($false)))
+    Log "Agreement version $eulaVersion accepted. Recorded in $acceptFile" "Green"
+}
 
 # ---------------------------------------------------------------------------
 Step "1/6 System check"

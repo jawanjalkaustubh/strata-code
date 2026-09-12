@@ -18,6 +18,15 @@ that plans and reviews. Nothing leaves your machine. No accounts, no keys.
 
 Not supported: AMD/Intel GPUs, macOS, Linux (this build only).
 
+## Agreement
+
+This is a pre-release build of software that **edits files and runs commands** in
+the folders you open, using AI models that can be wrong. Use it only on folders
+you control and have backed up. The installer shows the Tester License
+Agreement (`EULA.md`) and asks you to type `I AGREE`; the app asks again on
+first launch if it has no record of your acceptance. If you do not agree, do
+not install it.
+
 ## Install
 
 1. Extract the zip anywhere with 30 GB free (avoid `Program Files`). Do not

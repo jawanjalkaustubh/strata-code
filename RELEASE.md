@@ -83,3 +83,31 @@ the zip; their models and Ollama stay installed, and `Install.bat` skips them.
 - Unsigned executable (SmartScreen warning). Code signing needs a certificate.
 - The vision model from the photo project, if present in Ollama, blocks the
   coder until **Free GPU** is clicked.
+
+## Legal: the Tester License Agreement
+
+`EULA.md` at the repo root is the agreement. It is shown twice:
+
+- **Installer** prints it and requires the tester to type `I AGREE` before
+  anything is installed (`-AcceptAgreement` skips the prompt for automation).
+  Acceptance is recorded in `%APPDATA%\StrataCode-v1\agreement.json`, keyed to
+  a hash of the text, and a copy `agreement-accepted.json` is left in the
+  install folder.
+- **App** shows it on first launch if no matching acceptance exists (for
+  example if someone runs `Strata Code.exe` without the installer). The tester
+  must scroll to the end, tick the box, and click Accept; Decline quits. The
+  main process refuses to start the agent until then, whatever the UI says.
+
+Changing `EULA.md` changes the hash, so everyone sees the new version once.
+
+**Before distributing widely, have a lawyer look at `EULA.md`.** It is written
+in plain language and covers the real risks (the agent edits files and runs
+commands, AI output can be wrong, third-party models and installers, no
+warranty, liability cap), but it is not legal advice and has not been reviewed
+by a lawyer. Two things to decide yourself: the governing-law clause currently
+says "the jurisdiction in which the Author resides"; name it explicitly if you
+prefer. And add a contact address in section 13 if you want one beyond the
+repository.
+
+Put the same text in the release description (or link to `EULA.md` in the
+repo) so testers see it before downloading.

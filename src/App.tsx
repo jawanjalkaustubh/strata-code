@@ -4,6 +4,7 @@ import { FileTree } from './components/FileTree';
 import { CodeEditor } from './components/CodeEditor';
 import { ChatPanel } from './components/ChatPanel';
 import { AboutModal } from './components/AboutModal';
+import { AgreementModal } from './components/AgreementModal';
 import { ModelManagerModal } from './components/ModelManagerModal';
 import { DualBrainModal } from './components/DualBrainModal';
 import { TerminalDrawer } from './components/TerminalDrawer';
@@ -101,6 +102,8 @@ export const App: React.FC = () => {
   });
   const [isAboutOpen, setIsAboutOpen] = useState<boolean>(false);
   const [isReady, setIsReady] = useState<boolean>(false);
+  // Non-null while the Tester License Agreement still needs acceptance.
+  const [agreement, setAgreement] = useState<{ text: string; version: string } | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -417,6 +420,14 @@ export const App: React.FC = () => {
       });
     }
 
+    // Tester License Agreement: block the UI until accepted (the main process
+    // also refuses agent:start until then, so this is belt and braces).
+    if (api?.getAgreement) {
+      api.getAgreement().then((st: any) => {
+        if (st && st.available && !st.accepted) setAgreement({ text: st.text, version: st.version });
+      }).catch(() => {});
+    }
+
     // Global shortcuts: Ctrl+` (Terminal), Ctrl+O (Open Folder), Ctrl+N (New Chat), Ctrl+S (Save)
     const handleGlobalShortcuts = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey) {
@@ -706,7 +717,22 @@ export const App: React.FC = () => {
       isEditorOpen: isEditorOpen
     };
 
-    api?.startAgent(prompt, activeModel, autoMode, taskMode, editorContext, images);
+    api?.startAgent(prompt, activeModel, autoMode, taskMode, editorContext, images).then((res: any) => {
+      if (res && res.started === false && res.error) {
+        setMessages(prev => [...prev, {
+          id: `err_${Date.now()}`, role: 'assistant', content: `⚠️ ${res.error}`, timestamp: new Date().toLocaleTimeString()
+        }]);
+        setStatus({ state: 'idle' });
+      }
+    }).catch(() => {});
+  });
+
+  const acceptAgreement = useEventCallback(async () => {
+    const res = await api?.acceptAgreement?.();
+    if (res?.success) setAgreement(null);
+  });
+  const declineAgreement = useEventCallback(async () => {
+    await api?.declineAgreement?.();
   });
 
   const handleNewChat = useEventCallback(async () => {
@@ -953,6 +979,15 @@ export const App: React.FC = () => {
         onClose={closeTerminal}
         workspace={workspace}
       />
+
+      {agreement && (
+        <AgreementModal
+          text={agreement.text}
+          version={agreement.version}
+          onAccept={acceptAgreement}
+          onDecline={declineAgreement}
+        />
+      )}
 
       <AboutModal
         isOpen={isAboutOpen}
