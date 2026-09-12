@@ -589,7 +589,7 @@ ipcMain.handle('workspace:open-dialog', async () => {
 });
 
 // The renderer used to hard-code the developer's workspace as its initial
-// state; a tester's machine has no such folder. It now asks.
+// state; another machine has no such folder. It now asks.
 ipcMain.handle('workspace:get-current', async () => ({
   workspace: currentWorkspace,
   installRoot: installRoot(),
@@ -913,7 +913,7 @@ ipcMain.handle('ollama:delete-model', async (_e, modelName: string) => {
 // =============================================================================
 // TESTER LICENSE AGREEMENT
 //
-// The agent modifies files and runs commands. Nothing runs until the tester has
+// The agent modifies files and runs commands. Nothing runs until the user has
 // accepted EULA.md - either in the installer (which records acceptance in
 // userData) or in the app's first-launch dialog. Acceptance is keyed to a hash
 // of the agreement text, so a changed agreement is shown again.
@@ -973,7 +973,7 @@ ipcMain.handle('legal:decline', async () => {
 ipcMain.handle('agent:start', async (_e, prompt: string, model: string, autoMode: boolean, taskMode: string = 'coding', editorContext?: any, images?: string[]) => {
   const legal = agreementState();
   if (legal.available && !legal.accepted) {
-    return { started: false, error: 'The Tester License Agreement has not been accepted. Accept it to use the agent.' };
+    return { started: false, error: 'The License Agreement has not been accepted. Accept it to use the agent.' };
   }
   agent.run(prompt, model, autoMode, taskMode, editorContext, images);
   return { started: true };
@@ -1120,6 +1120,7 @@ ipcMain.handle('engine:stop-coder', async () => {
 
 ipcMain.handle('shell:open-external', async (_e, url: string) => {
   if (url && (url.startsWith('https://') || url.startsWith('http://'))) {
+    console.log(`[Shell] open external: ${url}`);
     shell.openExternal(url);
     return { success: true };
   }

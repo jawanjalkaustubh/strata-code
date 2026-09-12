@@ -1,0 +1,7 @@
+{
+  "_comment": "Links shown in the app (About dialog, status bar) and on GitHub. Fill donateUrl in with your Ko-fi / Buy Me a Coffee / GitHub Sponsors / PayPal.me page; the donate button is hidden while it is empty. Rebuild (npm run build) after editing.",
+  "projectUrl": "",
+  "issuesUrl": "",
+  "donateUrl": "",
+  "donateLabel": "Support development"
+}

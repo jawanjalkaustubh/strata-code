@@ -61,7 +61,7 @@ if ($DryRun) { Write-Host "  DRY RUN: nothing will be downloaded or changed." -F
 Write-Host ""
 
 # ---------------------------------------------------------------------------
-Step "0/6 Tester License Agreement"
+Step "0/6 License Agreement"
 # ---------------------------------------------------------------------------
 # The app modifies files and runs commands; nothing is installed or run until
 # the agreement is accepted. Acceptance is recorded (keyed to a hash of the
@@ -86,7 +86,7 @@ if ($alreadyAccepted) {
         Write-Host ""
         Write-Host $eulaText
         Write-Host ""
-        Write-Host "  You must accept the Tester License Agreement above to continue." -ForegroundColor Yellow
+        Write-Host "  You must accept the License Agreement above to continue." -ForegroundColor Yellow
         Write-Host "  It is also saved as EULA.md in this folder." -ForegroundColor DarkGray
         $answer = Read-Host "  Type I AGREE to accept, or anything else to cancel"
         if ($answer.Trim().ToUpper() -ne "I AGREE") {

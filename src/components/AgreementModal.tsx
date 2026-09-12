@@ -9,7 +9,7 @@ interface AgreementModalProps {
 }
 
 /**
- * First-launch Tester License Agreement. Blocks the whole UI until accepted;
+ * First-launch License Agreement. Blocks the whole UI until accepted;
  * Decline quits the app. The agreement is Markdown, rendered here as plain
  * structured text (headings and paragraphs) - no markdown library needed.
  */
@@ -38,7 +38,7 @@ const AgreementModalInner: React.FC<AgreementModalProps> = ({ text, version, onA
         <div className="px-5 py-3 border-b border-studio-border flex items-center gap-3">
           <ShieldAlert size={18} className="text-state-warn-400" />
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-semibold text-studio-text">Tester License Agreement</div>
+            <div className="text-sm font-semibold text-studio-text">License Agreement</div>
             <div className="text-micro text-studio-muted">Please read it. The agent can modify files and run commands in the folders you open. Version {version}</div>
           </div>
           <ScrollText size={16} className="text-studio-subtle" />
@@ -72,7 +72,7 @@ const AgreementModalInner: React.FC<AgreementModalProps> = ({ text, version, onA
               onChange={e => setChecked(e.target.checked)}
               className="accent-role-worker-500"
             />
-            I have read and agree to the Tester License Agreement
+            I have read and agree to the License Agreement
             {!scrolledToEnd && <span className="text-micro text-studio-subtle">(scroll to the end first)</span>}
           </label>
           <div className="flex-1" />

@@ -1,4 +1,4 @@
-# Releasing a tester build
+# Releasing a build
 
 ## Build the zip
 
@@ -15,7 +15,7 @@ Add `-SkipBuild` to reuse an existing build. `release\` is git-ignored.
 
 What the zip contains and does not contain:
 
-| In the zip | Downloaded by the tester's `Install.bat` |
+| In the zip | Downloaded by the user's `Install.bat` |
 |---|---|
 | `Strata Code.exe` + Electron runtime (~190 MB) | Ollama (winget or `OllamaSetup.exe`, 1.5 GB) |
 | `runtime\llama.cpp\` server + CUDA 12 DLLs (1.1 GB, ~550 MB zipped) | `qwen3.8:27b` into Ollama (18 GB) |
@@ -26,8 +26,15 @@ the two models are 43 GB. The installer downloads them with resume support.
 
 ## Publish on GitHub (first time)
 
-1. Create an empty repository on github.com (e.g. `strata-code`, private or
-   public, no README, no .gitignore).
+**The repository must be public.** Release downloads in a private repository
+are only visible to collaborators, so "free for everyone" needs a public repo.
+That makes the source code visible too; `EULA.md` still governs use (free to
+use and share unmodified, no selling, no modified redistribution). If you want
+the code private, create a second, public repository that holds only the
+README and the releases, and push the code to the private one.
+
+1. Create an empty **public** repository on github.com (e.g. `strata-code`,
+   no README, no .gitignore).
 2. Push the code:
 
 ```powershell
@@ -39,11 +46,11 @@ git push -u origin master
    Git will open a browser sign-in the first time.
 
 3. Create the release: repository → **Releases** → **Draft a new release** →
-   tag `v1.0.0-test1`, title `Strata Code tester build 1`. Drag
+   tag `v1.0.0`, title `Strata Code 1.0.0`. Drag
    `release\Strata-Code-Windows-x64.zip` and the `.sha256` file into the
-   assets box, paste the tester notes below, **Publish release**.
+   assets box, paste the release notes below, **Publish release**.
 
-4. Send testers the release URL. They download the zip, extract, run
+4. Share the release URL. They download the zip, extract, run
    `Install.bat`, and follow `README.md` (it is inside the zip).
 
 Optional, from the terminal instead of the web UI (installs the GitHub CLI once):
@@ -51,19 +58,21 @@ Optional, from the terminal instead of the web UI (installs the GitHub CLI once)
 ```powershell
 winget install GitHub.cli
 gh auth login
-gh release create v1.0.0-test1 release\Strata-Code-Windows-x64.zip release\Strata-Code-Windows-x64.zip.sha256 --title "Strata Code tester build 1" --notes-file installer\README.md
+gh release create v1.0.0 release\Strata-Code-Windows-x64.zip release\Strata-Code-Windows-x64.zip.sha256 --title "Strata Code 1.0.0" --notes-file installer\README.md
 ```
 
 ## Later builds
 
 Bump `version` in `package.json`, commit, run `package.ps1`, then
-`gh release create v1.0.1-test2 …` (or the web UI). Testers re-download only
+`gh release create v1.0.1 …` (or the web UI). Testers re-download only
 the zip; their models and Ollama stay installed, and `Install.bat` skips them.
 
-## Tester notes to paste into the release
+## Release notes to paste
 
 > **Requirements:** Windows 10/11 x64, NVIDIA GPU with 22 GB+ VRAM (32 GB
 > recommended), driver 528+, 24 GB+ RAM, ~50 GB free disk, ~45 GB download.
+>
+> **Free software, voluntary donations.** Strata Code is free. If it helps you, the About dialog has a Support development button.
 >
 > **Install:** extract the zip anywhere with 30 GB free, run `Install.bat`,
 > wait for the downloads (they resume if interrupted), then launch from the
@@ -75,7 +84,7 @@ the zip; their models and Ollama stay installed, and `Install.bat` skips them.
 > **Report:** the prompt, what the chat showed, the status bar state, and the
 > last 50 lines of `%APPDATA%\StrataCode-v1\coder-server.log`.
 
-## Known limits of this build
+## Known limits
 
 - NVIDIA only; no AMD/Intel/CPU fallback.
 - One model resident at a time on a 32 GB card; the app routes around it and
@@ -84,17 +93,17 @@ the zip; their models and Ollama stay installed, and `Install.bat` skips them.
 - The vision model from the photo project, if present in Ollama, blocks the
   coder until **Free GPU** is clicked.
 
-## Legal: the Tester License Agreement
+## Legal: the License Agreement
 
 `EULA.md` at the repo root is the agreement. It is shown twice:
 
-- **Installer** prints it and requires the tester to type `I AGREE` before
+- **Installer** prints it and requires the user to type `I AGREE` before
   anything is installed (`-AcceptAgreement` skips the prompt for automation).
   Acceptance is recorded in `%APPDATA%\StrataCode-v1\agreement.json`, keyed to
   a hash of the text, and a copy `agreement-accepted.json` is left in the
   install folder.
 - **App** shows it on first launch if no matching acceptance exists (for
-  example if someone runs `Strata Code.exe` without the installer). The tester
+  example if someone runs `Strata Code.exe` without the installer). The user
   must scroll to the end, tick the box, and click Accept; Decline quits. The
   main process refuses to start the agent until then, whatever the UI says.
 
@@ -110,4 +119,26 @@ prefer. And add a contact address in section 13 if you want one beyond the
 repository.
 
 Put the same text in the release description (or link to `EULA.md` in the
-repo) so testers see it before downloading.
+repo) so people see it before downloading.
+
+## Donations
+
+The app shows a **Support development** button in the About dialog and a
+**donate** link in the status bar, both opening the URL in `support.json` at the
+repo root. They are hidden while `donateUrl` is empty. Fill in `support.json`
+(donate page, project page, issues page), rebuild, and repackage. Also fill in
+`.github/FUNDING.yml` so GitHub shows a Sponsor button on the repository.
+
+Picking a platform (all let people give without an account of their own):
+
+| Platform | Fee on donations | Notes |
+|---|---|---|
+| Ko-fi | 0 % platform fee (PayPal/Stripe fees apply) | Quickest to set up; one page, one link |
+| GitHub Sponsors | 0 % | Needs a sponsor profile approved by GitHub and a Stripe/bank setup; shows the Sponsor button natively |
+| Buy Me a Coffee | 5 % | Similar to Ko-fi |
+| PayPal.me | PayPal fees | No page, just a link |
+
+Say in the release notes and on the page that the software is free and
+donations are voluntary; the EULA already says so (section 7). Keep records:
+depending on where you live, donations can count as taxable income. That is a
+question for an accountant, not for this document.

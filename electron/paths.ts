@@ -9,7 +9,7 @@ import * as electron from 'electron';
  * Resolution order for each: environment override → the packaged layout
  * (relative to the folder holding Strata Code.exe) → the developer layout
  * on the original workstation (C:\AI_dev, D:\AntiGravity). The dev fallbacks
- * keep `npm start` working unchanged; a tester's extracted zip never touches
+ * keep `npm start` working unchanged; an extracted zip never touches
  * them.
  *
  * Packaged layout:
@@ -87,7 +87,7 @@ export interface CoderConfig {
   extraArgs?: string[];
 }
 
-/** Written by the installer according to the tester's VRAM. Absent on the dev machine. */
+/** Written by the installer according to the machine's VRAM. Absent on the dev machine. */
 export function coderConfig(): CoderConfig {
   const p = path.join(installRoot(), 'runtime', 'coder-config.json');
   try {

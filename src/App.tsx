@@ -102,7 +102,7 @@ export const App: React.FC = () => {
   });
   const [isAboutOpen, setIsAboutOpen] = useState<boolean>(false);
   const [isReady, setIsReady] = useState<boolean>(false);
-  // Non-null while the Tester License Agreement still needs acceptance.
+  // Non-null while the License Agreement still needs acceptance.
   const [agreement, setAgreement] = useState<{ text: string; version: string } | null>(null);
 
   useEffect(() => {
@@ -420,7 +420,7 @@ export const App: React.FC = () => {
       });
     }
 
-    // Tester License Agreement: block the UI until accepted (the main process
+    // License Agreement: block the UI until accepted (the main process
     // also refuses agent:start until then, so this is belt and braces).
     if (api?.getAgreement) {
       api.getAgreement().then((st: any) => {

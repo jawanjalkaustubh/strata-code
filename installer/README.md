@@ -1,6 +1,6 @@
-# Strata Code — tester build
+# Strata Code
 
-A local, offline AI coding studio for Windows. Two models on one NVIDIA GPU:
+A free, local, offline AI coding studio for Windows. Two models on one NVIDIA GPU:
 a **coder** (Qwen3-Coder-30B-A3B, served by a bundled llama.cpp) that reads,
 edits and verifies code, and a **general** model (Qwen 3.8 27B via Ollama)
 that plans and reviews. Nothing leaves your machine. No accounts, no keys.
@@ -20,10 +20,10 @@ Not supported: AMD/Intel GPUs, macOS, Linux (this build only).
 
 ## Agreement
 
-This is a pre-release build of software that **edits files and runs commands** in
+This is software that **edits files and runs commands** in
 the folders you open, using AI models that can be wrong. Use it only on folders
-you control and have backed up. The installer shows the Tester License
-Agreement (`EULA.md`) and asks you to type `I AGREE`; the app asks again on
+you control and have backed up. The installer shows the License Agreement
+(`EULA.md`) and asks you to type `I AGREE`; the app asks again on
 first launch if it has no record of your acceptance. If you do not agree, do
 not install it.
 
@@ -58,7 +58,7 @@ partial downloads.
   3. `Add a function X to file Y and make sure it typechecks` → a plan,
      edits, a verification run, and an architect review
 
-## What to look at while testing
+## What to look at
 
 - **Status bar**: coder up/loading/blocked, VRAM used/free, what Ollama
   holds. If another app has a model in Ollama, the coder shows **blocked**
@@ -79,6 +79,13 @@ partial downloads.
 | Coder model | `models\` next to the app |
 | General model | Ollama's store (`%USERPROFILE%\.ollama`) |
 
+## Free software, voluntary donations
+
+Strata Code is free for everyone. If it is useful to you and you want to help
+fund new features and future apps, there is a **Support development** button in
+the About dialog and a small **donate** link in the status bar. Donating is
+entirely optional, buys nothing, and changes nothing about the app.
+
 ## Reporting problems
 
 Open an issue with: the prompt you sent, what the chat showed, the status bar
@@ -92,7 +99,7 @@ from *Settings → Apps* if you don't want it.
 
 ## Licenses
 
-Strata Code is © Kaustubh Jawanjal. Bundled: llama.cpp (MIT), NVIDIA CUDA
+Strata Code is © Kaustubh Jawanjal and is free to use under `EULA.md`. Bundled: llama.cpp (MIT), NVIDIA CUDA
 runtime libraries (NVIDIA CUDA Toolkit EULA, redistributable), Electron and
 Chromium (BSD/MIT). Downloaded at install time, not bundled: Ollama, and the
 Qwen models (Apache-2.0). See `LICENSES\`.

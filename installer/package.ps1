@@ -5,7 +5,7 @@
    Strata Code.exe + Electron runtime      (@electron/packager, no node_modules)
    runtime\llama.cpp\                      llama-server.exe + required DLLs + launch script
    models\                                 empty; the installer fills it
-   Install.bat / Install.ps1 / README.md   tester installer
+   Install.bat / Install.ps1 / README.md   installer
    LICENSES\
  Usage (from the strata folder):  powershell -ExecutionPolicy Bypass -File installer\package.ps1
    -SkipBuild     reuse dist/ and dist-electron/
