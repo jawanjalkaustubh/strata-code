@@ -310,22 +310,26 @@ export const App: React.FC = () => {
       const m = await api.getModels();
       if (m && m.length > 0) {
         setModels(m);
-        // Automatically ensure active models point to an actually installed model
+        // Automatically ensure active models point to an actually installed model.
+        // Vision / embedding models are never auto-picked for either slot: a
+        // freshly pulled qwen3-vl sorts first in Ollama's list and "m[0]" put it
+        // in the coding slot.
+        const isNonChat = (name: string) => /(^|[-_:/])(vl|vision|embed|embedding|rerank|whisper|clip)([-_:/]|$)/i.test(name);
         setCodingModel(prev => {
-          if (!m.includes(prev)) {
-            const fallback = m.find((name: string) => name.toLowerCase().includes('coder')) || m[0];
-            localStorage.setItem('strata_coding_model', fallback);
-            return fallback;
-          }
-          return prev;
+          if (m.includes(prev)) return prev;
+          const fallback = m.find((name: string) => name.toLowerCase().includes('coder'))
+            || m.find((name: string) => !isNonChat(name))
+            || m[0];
+          localStorage.setItem('strata_coding_model', fallback);
+          return fallback;
         });
         setGeneralModel(prev => {
-          if (!m.includes(prev)) {
-            const fallback = m.find((name: string) => !name.toLowerCase().includes('coder')) || m[0];
-            localStorage.setItem('strata_general_model', fallback);
-            return fallback;
-          }
-          return prev;
+          if (m.includes(prev)) return prev;
+          const fallback = m.find((name: string) => !name.toLowerCase().includes('coder') && !isNonChat(name))
+            || m.find((name: string) => !name.toLowerCase().includes('coder'))
+            || m[0];
+          localStorage.setItem('strata_general_model', fallback);
+          return fallback;
         });
       }
     }

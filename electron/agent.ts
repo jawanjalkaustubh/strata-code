@@ -2166,6 +2166,51 @@ WORKING METHOD (follow exactly):
     }
     let architectEscalations = 0;
 
+    // "What model is this?" is answered by the engine from what it actually
+    // knows - configured slots, what is resident on the GPU, and where this
+    // turn would be routed. Sending it to the worker produced a directory
+    // listing.
+    const identityAsk = /^\s*(what|which)\s+(model|llm|ai|brain)s?\s*(is this|is that|are you|am i (talking|chatting|speaking) (to|with)|is (running|active|in use|loaded|being used)|do you use|are we using|is (the )?(worker|architect|coder))?\s*\??\s*$|^\s*(who|what) are you\s*\??\s*$/i;
+    if (identityAsk.test((prompt || '').trim())) {
+      let statusText = 'engine status unavailable';
+      let routedText = '';
+      try {
+        const st = await this.probeLocalEngines(true);
+        const server = st.llamaServer.up
+          ? `llama-server :8080 serving **${st.llamaServer.alias || 'unknown alias'}**${st.llamaServer.nCtx ? ` (${Math.round(st.llamaServer.nCtx / 1024)}K context)` : ''}`
+          : st.llamaServer.loading ? 'llama-server :8080 still loading' : 'llama-server :8080 not running';
+        const ollama = st.ollamaLoaded.length
+          ? `Ollama has **${st.ollamaLoaded.map(m => m.name).join(', ')}** loaded`
+          : 'Ollama has no model loaded';
+        const gpu = st.gpu ? ` • GPU ${(st.gpu.usedMiB / 1024).toFixed(1)} / ${(st.gpu.totalMiB / 1024).toFixed(1)} GB used` : '';
+        statusText = `${server} • ${ollama}${gpu}`;
+        const routed = await this.resolveLocalWorker(workerModel);
+        routedText = routed.model === workerModel
+          ? `**${routed.model}**`
+          : `**${routed.model}** (VRAM arbiter: ${workerModel} cannot load beside the resident model)`;
+      } catch {
+        routedText = `**${workerModel}**`;
+      }
+      const answer = [
+        `**Configured** — coding model: \`${codingModel}\` • general model: \`${generalModel}\` • architect: \`${architectModel}\` • mode: ${isHybrid ? `hybrid (${hybridTier})` : 'local'} • task mode: ${taskMode}`,
+        `**Resident right now** — ${statusText}`,
+        `**This turn would run on** — ${routedText}`,
+        `Change the slots from the model picker in the title bar or the Model Manager. In hybrid mode the coding model is the worker and the general model is the architect.`
+      ].join('\n\n');
+      const sender = { model: 'Strata Engine', senderModelType: 'local', senderName: 'Strata Engine', addressedTo: 'User' };
+      this.send('agent:message-start', sender);
+      this.send('agent:token', { token: answer, ...sender });
+      this.flushTokens();
+      this.history.push({ role: 'assistant', content: answer });
+      this.send('agent:collaborate-step', {
+        stage: 'verified', architectModel: '', workerModel, activeRole: 'worker',
+        title: 'Answered by the engine', message: 'Model identity resolved from engine state (no model call).',
+        cloudTokens: 0, localTokens: 0, quotaSavedPercent: 0
+      });
+      this.send('agent:status', { state: 'idle' });
+      return;
+    }
+
     const gateEnabled = this.providerConfig.verificationGate !== false;
     const maxReviewRounds = typeof this.providerConfig.maxReviewRounds === 'number'
       ? Math.max(0, Math.min(this.providerConfig.maxReviewRounds, 3))
