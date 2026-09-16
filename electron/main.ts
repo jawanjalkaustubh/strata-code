@@ -5,7 +5,7 @@ import * as os from 'os';
 import { exec, execFile, execFileSync, execSync, spawn, ChildProcess } from 'child_process';
 import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
-import { AgentEngine } from './agent';
+import { AgentEngine, OLLAMA_NUM_CTX } from './agent';
 import {
   coderLaunchScript, coderLaunchArgs, coderModelPath, coderConfig, defaultWorkspace, rememberWorkspace, runtimeDir, modelsDir, installRoot
 } from './paths';
@@ -1014,9 +1014,13 @@ Output ONLY the replacement code lines. Do NOT wrap your output in markdown code
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: model || 'qwen2.5-coder:32b',
+        model: model || 'qwen3.8:27b',
         prompt: `${systemPrompt}\n\n${userPrompt}`,
-        stream: false
+        stream: false,
+        think: false,
+        // Same context as the chat path and as Strata Photo: without it Ollama used its own default (65536 on
+        // 0.34) and rebuilt the runner on every switch between Ctrl+K and the chat.
+        options: { num_ctx: OLLAMA_NUM_CTX }
       }),
       signal: AbortSignal.timeout(45000)
     });

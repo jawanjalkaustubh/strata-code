@@ -14,6 +14,15 @@ import * as path from 'path';
 import { execFile, spawn } from 'child_process';
 import { liveSessionPath, coderModelPath as resolveCoderModelPath } from './paths';
 
+/**
+ * Ollama context length for every request this app makes (chat, retry, inline completion). Ollama restarts the
+ * model's runner whenever `num_ctx` differs from the resident one, so this MUST equal Strata Photo's NUM_CTX
+ * (strata-photo/electron/agent/providers/ollama.ts, 32768): both apps use qwen3.8:27b, and with one value a
+ * Photo -> Code -> Photo window switch reuses the loaded runner instead of reloading 17 GB of weights.
+ * Measured 2026-09-15: qwen3.8:27b resident at 32 K = 17.5 GB (its hybrid attention keeps the KV cache small).
+ */
+export const OLLAMA_NUM_CTX = 32768;
+
 export interface AgentMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
@@ -1764,11 +1773,11 @@ You are the Autonomous Implementation Worker on this NVIDIA RTX 5090 workstation
     // turns get think:false; the architect gets it on when the tier warrants.
     const thinkCapable = await this.ollamaSupportsThinking(model || 'qwen3.8:27b');
     const think: boolean | undefined = thinkCapable ? (extra.think === true) : undefined;
-    // Pinned, NOT adaptive. Ollama reloads the model from scratch whenever
-    // `num_ctx` changes between requests, so alternating 8192/16384 across turns
-    // cost a full model reload (tens of seconds) mid-conversation. History is
-    // already pruned to a 9K budget, so 16384 always fits.
-    const numCtx = 16384;
+    // Pinned, NOT adaptive, and shared with Strata Photo (OLLAMA_NUM_CTX). Ollama reloads the model from
+    // scratch whenever `num_ctx` changes between requests: alternating 8192/16384 across turns used to cost a
+    // full reload mid-conversation, and a value different from Photo's cost one on every window switch.
+    // History is pruned to a 9K budget, so 32768 always fits.
+    const numCtx = OLLAMA_NUM_CTX;
 
     const cleanModelName = (model || 'qwen3.8:27b').trim().toLowerCase();
     const isKnownNonTool = AgentEngine.nonToolModels.has(cleanModelName) || AgentEngine.nonToolModels.has(cleanModelName.split(':')[0]);
@@ -1890,7 +1899,8 @@ You are the Autonomous Implementation Worker on this NVIDIA RTX 5090 workstation
           }
         } catch {}
       } else if (res.status === 500) {
-        // 500 Recovery: Reduce context to 8192 and compact history aggressively, then retry
+        // 500 Recovery: Reduce context to 8192 and compact history aggressively, then retry. Last resort only:
+        // the smaller num_ctx restarts the runner (and the next normal turn restarts it again).
         try {
           payload.options.num_ctx = 8192;
           const retryPruned = this.getPrunedHistory(messages, 4500);
