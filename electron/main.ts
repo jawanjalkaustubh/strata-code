@@ -266,7 +266,7 @@ const agent = new AgentEngine(currentWorkspace);
 // GPU name is filled in asynchronously once the window is up (see whenReady).
 // The agent's default label is used until then.
 
-// Multi-Provider Configuration (Ollama, Anthropic Claude, DeepSeek, OpenRouter)
+// Provider configuration (local engines only: Ollama and the llama.cpp coder)
 const providerConfigPath = path.join(app.getPath('userData'), 'provider-config.json');
 
 function getStoredProviderConfig() {

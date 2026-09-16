@@ -149,7 +149,6 @@ export interface EditorContext {
   isEditorOpen?: boolean;
 }
 
-
 export class AgentEngine {
   workspaceDir: string;
   tools: ToolExecutor;
@@ -522,29 +521,6 @@ export class AgentEngine {
       candidateTokens
     };
   }
-
-  /**
-   * Pure Local Claude/Anthropic Compatibility Dispatcher
-   */
-  private async callAnthropic(
-    messages: AgentMessage[],
-    model: string,
-    signal: AbortSignal,
-    taskMode: string
-  ): Promise<{ content: string; toolCalls: any[]; promptTokens: number; candidateTokens: number }> {
-    const localModel = this.providerConfig.codingModel || 'Qwen3-Coder-30B-A3B-Instruct';
-    const res = await this.callLocalModel(messages, localModel, signal, taskMode, undefined, true);
-    return {
-      content: res.content,
-      toolCalls: res.toolCalls,
-      promptTokens: 0,
-      candidateTokens: 0
-    };
-  }
-
-  /**
-   * OpenAI / DeepSeek / OpenRouter compatible API caller
-   */
 
   // =========================================================================
   // LOCAL ENGINE ARBITER
@@ -1024,16 +1000,6 @@ export class AgentEngine {
     return this.providerConfig.allowPaidApis === true;
   }
 
-  /**
-   * Refuses a metered call before it reaches the network.
-   */
-  private assertPaidAllowed(_provider: string) {
-    if (this.paidApisAllowed()) return;
-    throw new Error(
-      `PAID_API_BLOCKED: Pure Local mode is active ($0.00 cost). Paid APIs are disabled.`
-    );
-  }
-
   /** Which service backs an architect model id. Always local. */
   architectProviderFor(_modelId?: string): ArchitectProvider {
     return 'local';
@@ -1384,7 +1350,7 @@ ${parts.join('\n\n')}`;
   }
 
   /**
-   * OpenAI / DeepSeek / OpenRouter / Port 8080 llama-server compatible API caller
+   * OpenAI-compatible API caller for the local llama-server on port 8080 (the /v1 chat shape; no cloud service is ever called)
    */
   private async callOpenAICompatible(
     messages: AgentMessage[],

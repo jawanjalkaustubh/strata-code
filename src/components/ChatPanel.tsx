@@ -4,7 +4,7 @@ import {
 } from 'lucide-react';
 import { ChatMessage, ToolCallItem, TaskMode, FileNode, SystemInfo, CollaborateStepData, HybridTier } from '../types';
 import { STRATA_ICON } from '../assets/logo';
-import { ClaudeCodeInspector, LiveActivityItem } from './ClaudeCodeInspector';
+import { ActivityInspector, LiveActivityItem } from './ActivityInspector';
 
 interface ChatPanelProps {
   messages: ChatMessage[];
@@ -274,12 +274,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
   const isBusy = status.state !== 'idle' && status.state !== 'stopped';
 
-  // Claude Code Inspector & Activity State (Ctrl + O)
+  // Activity inspector state (Ctrl + O)
   const [isInspectorOpen, setIsInspectorOpen] = useState(false);
   const [activityHistory, setActivityHistory] = useState<LiveActivityItem[]>([]);
   const [currentThought, setCurrentThought] = useState<string>('');
 
-  // Global Ctrl + O keyboard shortcut to toggle Claude Code Inspector
+  // Global Ctrl + O keyboard shortcut to toggle the activity inspector
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && (e.key === 'o' || e.key === 'O')) {
@@ -471,7 +471,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     setInput(prev => prev.replace(new RegExp(`@("?)${filePath.replace(/\\/g, '\\\\')}("?)`, 'g'), '').trim());
   };
 
-  // Stopwatch timer for Claude-like thinking counter
+  // Stopwatch timer for the thinking counter
   useEffect(() => {
     let timer: any;
     if (isBusy) {
@@ -594,7 +594,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         </div>
 
         <div className="flex items-center space-x-1.5 flex-shrink-0">
-          {/* Claude Code Live Inspector Toggle (Ctrl + O) */}
+          {/* Live activity inspector toggle (Ctrl + O) */}
           <button
             onClick={() => setIsInspectorOpen(prev => !prev)}
             className={`flex items-center space-x-1 px-2 py-0.5 rounded text-micro font-mono border transition cursor-pointer ${
@@ -602,7 +602,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 ? 'bg-role-user-600/30 text-role-user-300 border-role-user-500/50'
                 : 'bg-studio-panel border-studio-border text-slate-400 hover:text-slate-200'
             }`}
-            title="Toggle Claude Code Inspector (Ctrl + O)"
+            title="Toggle the activity inspector (Ctrl + O)"
           >
             <BrainCircuit size={11} className={isBusy ? 'animate-spin text-state-info-400' : 'text-role-user-400'} />
             <span className="hidden sm:inline">Ctrl+O</span>
@@ -932,7 +932,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           ))
         )}
 
-        {/* Claude-Style Thinking & Working Card - disappears immediately when answer generation begins */}
+        {/* Thinking & working card - disappears immediately when answer generation begins */}
         {isThinking && (
           <div className="rounded-card p-3 bg-gradient-to-r from-role-tool-500/10 via-role-architect-500/10 to-role-user-500/10 border border-role-tool-500/30 text-xs shadow-lg shadow-role-tool-500/5 mr-3 animate-in fade-in">
             <div className="flex items-center space-x-2.5">
@@ -1158,7 +1158,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             </div>
           )}
 
-          {/* Claude Code CLI Live Activity Ticker - hidden while assistant is actively streaming answer */}
+          {/* Live activity ticker - hidden while the assistant is actively streaming the answer */}
           {isBusy && !isAnswering && (
             <div className="flex items-center justify-between px-3 py-1.5 mb-2 rounded-card bg-studio-panel/90 border border-role-user-500/30 text-xs text-slate-200 animate-in fade-in select-none">
               <div className="flex items-center space-x-2 truncate">
@@ -1175,7 +1175,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 type="button"
                 onClick={() => setIsInspectorOpen(prev => !prev)}
                 className="flex items-center space-x-1.5 px-2 py-0.5 rounded bg-black/40 hover:bg-black/60 border border-white/10 text-micro font-mono text-slate-300 hover:text-white transition cursor-pointer flex-shrink-0 ml-2"
-                title="Toggle Claude Code Inspector (Ctrl+O)"
+                title="Toggle the activity inspector (Ctrl+O)"
               >
                 <span>Ctrl+O</span>
                 <span className="text-slate-400 font-sans hidden xs:inline">{isInspectorOpen ? 'Hide' : 'Inspect'}</span>
@@ -1467,8 +1467,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         </div>
       </form>
 
-      {/* Claude Code Live Inspector (Ctrl + O) */}
-      <ClaudeCodeInspector
+      {/* Live activity inspector (Ctrl + O) */}
+      <ActivityInspector
         isOpen={isInspectorOpen}
         onClose={() => setIsInspectorOpen(false)}
         activeModel={activeModel}

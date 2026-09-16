@@ -23,7 +23,7 @@ export interface LiveActivityItem {
   };
 }
 
-interface ClaudeCodeInspectorProps {
+interface ActivityInspectorProps {
   isOpen: boolean;
   onClose: () => void;
   activeModel: string;
@@ -35,7 +35,7 @@ interface ClaudeCodeInspectorProps {
   elapsedSeconds: number;
 }
 
-export const ClaudeCodeInspector: React.FC<ClaudeCodeInspectorProps> = ({
+export const ActivityInspector: React.FC<ActivityInspectorProps> = ({
   isOpen,
   onClose,
   activeModel,
@@ -102,7 +102,7 @@ export const ClaudeCodeInspector: React.FC<ClaudeCodeInspectorProps> = ({
           <div>
             <div className="flex items-center space-x-2">
               <h3 className="text-xs font-bold text-slate-100 flex items-center space-x-1.5">
-                <span>Claude Code Live Inspector</span>
+                <span>Live Activity Inspector</span>
               </h3>
               <kbd className="px-1.5 py-0.5 rounded bg-black/40 border border-white/10 text-micro font-mono text-role-user-300">
                 Ctrl + O
