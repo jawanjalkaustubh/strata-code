@@ -940,7 +940,7 @@ export class AgentEngine {
       });
       status = await this.probeLocalEngines(true);
       if (!cameUp && !status.llamaServer.up) {
-        throw new Error(`The coder server on port ${this.coderServerPort()} has been loading for over 90 seconds and is still not answering. It is probably stuck with its VRAM spilled into system RAM. Use "Free GPU" in the status bar (or restart the app, which stops and restarts it).`);
+        throw new Error(`The coder server on port ${this.coderServerPort()} has been loading for over 90 seconds and is still not answering. It is probably stuck with its VRAM spilled into system RAM. Restart the app, which stops and restarts it.`);
       }
       const serverModel = status.llamaServer.alias || 'Qwen3-Coder-30B-A3B-Instruct';
       if (!wantsServer) {
@@ -2591,7 +2591,7 @@ WORKING METHOD (follow exactly):
         if (coderResident && foreignMiB > 4096 && typeof freeMiB === 'number' && freeMiB < 3072) {
           blockedMessage = `The GPU is oversubscribed: the coder server and ${foreignNames} from another app are both resident, so generation would crawl and either server may crash. Not starting this run. Close the model in the other app, or click "Free GPU" in the status bar to unload it (that app will reload it when it needs it).`;
         } else if (!coderResident && status.coderBlockedBy && this.isPort8080Model(workerModel)) {
-          blockedMessage = `The coder server is not running and cannot start: GPU held by ${status.coderBlockedBy} (${typeof freeMiB === 'number' ? (freeMiB / 1024).toFixed(1) : '?'} GB free, ~${(this.coderServerNeedMiB() / 1024).toFixed(0)} GB needed). Close the model in the other app, or click "Free GPU" in the status bar to evict it.`;
+          blockedMessage = `The coder server is not running and cannot start: GPU held by ${status.coderBlockedBy} (${typeof freeMiB === 'number' ? (freeMiB / 1024).toFixed(1) : '?'} GB free, ~${(this.coderServerNeedMiB() / 1024).toFixed(0)} GB needed). Close the model in the other app, or click "Free GPU" in the status bar to unload it.`;
         }
       } catch {
         // Pre-flight is best-effort.

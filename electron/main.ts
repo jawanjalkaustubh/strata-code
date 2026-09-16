@@ -538,7 +538,7 @@ async function startCoderServer(reason: string): Promise<boolean> {
     return false;
   }
   if (status.coderBlockedBy) {
-    const detail = `GPU held by ${status.coderBlockedBy}. Use "Free GPU" in the status bar to evict it.`;
+    const detail = `GPU held by ${status.coderBlockedBy}. Use "Free GPU" in the status bar to unload it.`;
     console.log(`[Coder Server] Not started: ${detail}`);
     emitCoderEvent('error', detail);
     return false;
@@ -1280,9 +1280,9 @@ ipcMain.handle('provider:save-config', async (_e, config: any) => {
 // actually serving, its real context window, what Ollama is holding, and true
 // GPU headroom from nvidia-smi. All of this was already gathered by the VRAM
 // arbiter and rendered nowhere.
-ipcMain.handle('engine:status', async () => {
+ipcMain.handle('engine:status', async (_e, force?: boolean) => {
   try {
-    const status = await agent.probeLocalEngines();
+    const status = await agent.probeLocalEngines(force === true);
     return { success: true, status: { ...status, coderManaged: coderChild !== null, coderLog: coderLogFile() } };
   } catch (err: any) {
     return { success: false, error: err.message, status: null };

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { Cpu, HardDrive, Zap, CircleAlert } from 'lucide-react';
 
 export interface EngineStatus {
@@ -32,19 +32,30 @@ interface VramView { usedGiB: number; totalGiB: number; freeGiB: number; pct: nu
 
 type CoderEvent = { kind: 'starting' | 'up' | 'exited' | 'error' | 'stopped'; detail: string };
 
+/** One tooltip for the family's evict-all button (Photo, Code and Video use the same words). */
+const FREE_GPU_TIP = 'Unload every AI model from the graphics card, including one another Strata app is using (it reloads the model when it next needs it). Never done automatically.';
+
 const StatusBarInner: React.FC<{ workspace?: string }> = ({ workspace }) => {
   const [status, setStatus] = useState<EngineStatus | null>(null);
   const [failed, setFailed] = useState(false);
   // Last lifecycle push from the main process: why the coder is offline
   // (missing binary, no model, exited with a code, GPU held by a sibling).
   const [coderEvent, setCoderEvent] = useState<CoderEvent | null>(null);
+  // While a sibling holds the GPU the poll forces a fresh probe every 10 s, so
+  // the block clears within seconds of that app releasing its model.
+  const blockedRef = useRef(false);
 
   const poll = useCallback(async () => {
     const api = (window as any).api;
     if (!api?.getEngineStatus) return;
     try {
-      const res = await api.getEngineStatus();
-      if (res?.success && res.status) { setStatus(res.status); setFailed(false); }
+      const res = await api.getEngineStatus(blockedRef.current);
+      if (res?.success && res.status) {
+        setStatus(res.status);
+        setFailed(false);
+        // A "GPU held by" event is only true while the probe still reports a holder.
+        setCoderEvent(ev => ev && /^GPU held by /.test(ev.detail || '') && !res.status.coderBlockedBy ? null : ev);
+      }
       else setFailed(true);
     } catch {
       setFailed(true);
@@ -57,13 +68,14 @@ const StatusBarInner: React.FC<{ workspace?: string }> = ({ workspace }) => {
     // during one) and skips its process scans at idle; coder lifecycle
     // changes are pushed, so a slow poll loses nothing.
     const t = setInterval(poll, 30000);
+    const fast = setInterval(() => { if (blockedRef.current) poll(); }, 10000);
     const api = (window as any).api;
     const unsub = api?.onCoderEvent?.((ev: CoderEvent) => {
       setCoderEvent(ev);
       // Re-probe shortly after: the process has just appeared or gone.
       setTimeout(poll, 500);
     });
-    return () => { clearInterval(t); if (typeof unsub === 'function') unsub(); };
+    return () => { clearInterval(t); clearInterval(fast); if (typeof unsub === 'function') unsub(); };
   }, [poll]);
 
   const vram: VramView | null = useMemo<VramView | null>(() => {
@@ -100,6 +112,7 @@ const StatusBarInner: React.FC<{ workspace?: string }> = ({ workspace }) => {
   const serverLoading = !serverUp && status?.llamaServer.loading;
   const blockedBy = !serverUp && !serverLoading ? status?.coderBlockedBy : undefined;
   const foreign = status?.foreignOllama || [];
+  blockedRef.current = !!blockedBy;
 
   const [busy, setBusy] = useState<'take' | 'stop' | null>(null);
   const takeGpu = useCallback(async () => {
@@ -131,7 +144,7 @@ const StatusBarInner: React.FC<{ workspace?: string }> = ({ workspace }) => {
   const coderTitle = serverUp
     ? `Coder server on :8080${status?.coderManaged ? ' — started by this app; stops when idle or when the app closes' : ' — started outside the app; stops when the app closes'}${status?.coderLog ? `\nLog: ${status.coderLog}` : ''}`
     : serverLoading ? 'The coder server is reading its model into VRAM (typically 10–60 s). Prompts sent now wait for it.'
-    : blockedBy ? `GPU held by ${blockedBy}. "Free GPU" evicts it and starts the coder; the other app reloads its model when it next needs it. Clears itself when that app releases the model.`
+    : blockedBy ? `GPU held by ${blockedBy}. "Free GPU" unloads it and starts the coder; the other app reloads its model when it next needs it. Clears itself when that app releases the model.`
     : coderFailure ? coderFailure
     : 'No coder server yet. It starts on the first coding prompt (26 GB, 10–60 s) and stops again after the idle timeout.';
 
@@ -161,14 +174,14 @@ const StatusBarInner: React.FC<{ workspace?: string }> = ({ workspace }) => {
             {blockedBy ? `GPU held by ${blockedBy}` : coderFailure}
           </span>
         )}
-        {(blockedBy || (!serverUp && !serverLoading && foreign.length > 0)) && (
+        {(blockedBy || (!serverLoading && foreign.length > 0)) && (
           <button
             onClick={takeGpu}
             disabled={busy !== null}
             className="ml-1 px-1.5 py-0.5 rounded-control border border-state-danger-500/40 bg-state-danger-500/10 text-state-danger-300 hover:bg-state-danger-500/20 disabled:opacity-50 shrink-0"
-            title={`Evict ${foreign.map(f => f.heldBy ? `${f.name} (${f.heldBy})` : f.name).join(', ')} from Ollama and start the coder server. Never done automatically.`}
+            title={`${FREE_GPU_TIP}\nHere: unload ${foreign.map(f => f.heldBy ? `${f.name} (${f.heldBy})` : f.name).join(', ')} and start the coder server.`}
           >
-            {busy === 'take' ? 'evicting…' : 'Free GPU'}
+            {busy === 'take' ? 'Freeing…' : 'Free GPU'}
           </button>
         )}
         {serverUp && (
@@ -176,7 +189,7 @@ const StatusBarInner: React.FC<{ workspace?: string }> = ({ workspace }) => {
             onClick={stopCoder}
             disabled={busy !== null}
             className="ml-1 px-1.5 py-0.5 rounded-control border border-studio-border text-studio-subtle hover:text-studio-text hover:bg-studio-panel disabled:opacity-50 shrink-0"
-            title="Stop the coder server and release its VRAM (it restarts on the next app launch, or via Free GPU)"
+            title="Stop the coder server and release its VRAM (it starts again on the next coding prompt)"
           >
             {busy === 'stop' ? 'stopping…' : 'stop'}
           </button>

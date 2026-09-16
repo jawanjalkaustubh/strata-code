@@ -91,7 +91,7 @@ the zip; their models and Ollama stay installed, and `Install.bat` skips them.
   says so. A 24 GB card gets the Q4_K_M coder at 32K context.
 - Unsigned executable (SmartScreen warning). Code signing needs a certificate.
 - The vision model from the photo project, if present in Ollama, blocks the
-  coder until **Free GPU** is clicked.
+  coder until that app releases it or **Free GPU** is clicked.
 
 ## Legal: the License Agreement
 
