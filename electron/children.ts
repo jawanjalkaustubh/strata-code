@@ -1,0 +1,67 @@
+import { ChildProcess, execFile } from 'child_process';
+
+/**
+ * Every child process this app spawns for a job - agent tool commands, the
+ * terminal drawer, the coder server - is registered here so it can be
+ * tree-killed on its own timeout, on user Stop and at quit.
+ *
+ * Node's `timeout` option and `child.kill()` only reach the DIRECT child
+ * (powershell.exe); whatever it started (node, python, a dev server) lived on.
+ * `taskkill /PID <pid> /T /F` takes the whole tree, asynchronously so the quit
+ * path never blocks the event loop.
+ */
+export type ChildKind = 'tool' | 'terminal' | 'coder';
+
+interface Tracked { child: ChildProcess; kind: ChildKind }
+
+export const liveChildren = new Set<Tracked>();
+
+export function trackChild(child: ChildProcess, kind: ChildKind): void {
+  if (!child || typeof child.pid !== 'number') return;
+  const entry: Tracked = { child, kind };
+  liveChildren.add(entry);
+  const drop = () => liveChildren.delete(entry);
+  child.once('exit', drop);
+  child.once('error', drop);
+}
+
+/** Tree-kill one pid. Resolves (never rejects) within `boundMs`. */
+export function killTree(pid: number | undefined | null, boundMs = 3000): Promise<void> {
+  if (!pid || !Number.isFinite(pid)) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+    const timer = setTimeout(finish, boundMs);
+    try {
+      if (process.platform === 'win32') {
+        execFile('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: boundMs }, () => {
+          clearTimeout(timer);
+          finish();
+        });
+      } else {
+        try { process.kill(pid, 'SIGKILL'); } catch {}
+        clearTimeout(timer);
+        finish();
+      }
+    } catch {
+      clearTimeout(timer);
+      finish();
+    }
+  });
+}
+
+/** Tree-kill every tracked child (optionally only one kind). Bounded; never rejects. */
+export async function killTrackedChildren(kind?: ChildKind, boundMs = 3000): Promise<number[]> {
+  const targets = Array.from(liveChildren).filter(t => !kind || t.kind === kind);
+  const pids: number[] = [];
+  await Promise.all(targets.map(async (t) => {
+    const pid = t.child.pid;
+    if (!pid) return;
+    pids.push(pid);
+    (t.child as any).strataKilled = true;
+    await killTree(pid, boundMs);
+    try { t.child.kill(); } catch {}
+    liveChildren.delete(t);
+  }));
+  return pids;
+}

@@ -1,5 +1,27 @@
 import React, { useState, useRef, useEffect } from 'react';
-import Editor, { DiffEditor } from '@monaco-editor/react';
+import Editor, { DiffEditor, loader } from '@monaco-editor/react';
+import * as monaco from 'monaco-editor';
+import editorWorker from 'monaco-editor/editor/editor.worker.js?worker';
+import jsonWorker from 'monaco-editor/language/json/json.worker.js?worker';
+import cssWorker from 'monaco-editor/language/css/css.worker.js?worker';
+import htmlWorker from 'monaco-editor/language/html/html.worker.js?worker';
+import tsWorker from 'monaco-editor/language/typescript/ts.worker.js?worker';
+
+// Monaco is bundled from node_modules and served by Vite, not fetched from
+// jsdelivr on every launch: the editor used to be blank offline (and after a
+// cleared cache), and the CDN's 0.55 did not match the local 0.56 typings.
+(self as any).MonacoEnvironment = {
+  getWorker(_workerId: string, label: string) {
+    switch (label) {
+      case 'json': return new jsonWorker();
+      case 'css': case 'scss': case 'less': return new cssWorker();
+      case 'html': case 'handlebars': case 'razor': return new htmlWorker();
+      case 'typescript': case 'javascript': return new tsWorker();
+      default: return new editorWorker();
+    }
+  }
+};
+loader.config({ monaco });
 import { 
   X, Save, FileCode, PanelRightClose, Sparkles, GitCompare, Check, RotateCcw, Loader2, ArrowRight
 } from 'lucide-react';

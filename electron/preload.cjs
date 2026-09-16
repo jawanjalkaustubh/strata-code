@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld('api', {
   minimize: () => ipcRenderer.send('window:minimize'),
   maximize: () => ipcRenderer.send('window:maximize'),
   close: () => ipcRenderer.send('window:close'),
+  // Whether any editor buffer is unsaved; the main process prompts on close when true.
+  setDirty: (dirty) => ipcRenderer.send('window:set-dirty', !!dirty),
 
   // Workspace
   openDirectory: () => ipcRenderer.invoke('workspace:open-dialog'),
@@ -101,6 +103,13 @@ contextBridge.exposeInMainWorld('api', {
   // app's) and start the coder server. Never called automatically.
   takeGpu: () => ipcRenderer.invoke('engine:take-gpu'),
   stopCoderServer: () => ipcRenderer.invoke('engine:stop-coder'),
+  // Coder server lifecycle pushes: {kind: 'starting'|'up'|'exited'|'error'|'stopped', detail}.
+  // The status bar shows `detail` instead of a bare "coder offline".
+  onCoderEvent: (callback) => {
+    const handler = (_e, data) => callback(data);
+    ipcRenderer.on('coder:event', handler);
+    return () => ipcRenderer.removeListener('coder:event', handler);
+  },
   getProviderConfig: () => ipcRenderer.invoke('provider:get-config'),
   saveProviderConfig: (config) => ipcRenderer.invoke('provider:save-config', config),
   openExternalUrl: (url) => ipcRenderer.invoke('shell:open-external', url),

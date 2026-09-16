@@ -14,7 +14,7 @@ import * as electron from 'electron';
  *
  * Packaged layout:
  *   <root>\Strata Code.exe
- *   <root>\runtime\llama.cpp\llama-server.exe (+ DLLs, launch-server-8080.ps1)
+ *   <root>\runtime\llama.cpp\llama-server.exe (+ DLLs; launch-server-8080.ps1 is for manual use only)
  *   <root>\runtime\coder-config.json         written by the installer
  *   <root>\models\*.gguf                     downloaded by the installer
  */
@@ -57,10 +57,11 @@ export function runtimeDir(): string | null {
   ]);
 }
 
-export function coderLaunchScript(): string | null {
+/** The llama.cpp server binary itself. The app spawns it directly (no PowerShell wrapper) so it dies with the app. */
+export function coderServerExe(): string | null {
   const dir = runtimeDir();
   if (!dir) return null;
-  const p = path.join(dir, 'launch-server-8080.ps1');
+  const p = path.join(dir, 'llama-server.exe');
   return exists(p) ? p : null;
 }
 
@@ -81,9 +82,11 @@ export function modelsDir(): string | null {
 export interface CoderConfig {
   /** GGUF file name inside modelsDir, or an absolute path. */
   model?: string;
-  /** Context window passed as -Ctx. */
+  /** Context window passed as -c (default 65536). */
   ctx?: number;
-  /** Extra args appended verbatim to the launch script. */
+  /** Port the coder listens on (default 8080). */
+  port?: number;
+  /** Extra args appended verbatim to the llama-server command line. */
   extraArgs?: string[];
 }
 
@@ -122,15 +125,47 @@ export function coderModelPath(): string | null {
   }
 }
 
-/** Arguments for `powershell -File <script> …` that start the coder with this install's model and context. */
-export function coderLaunchArgs(): string[] | null {
-  const script = coderLaunchScript();
-  if (!script) return null;
-  const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script];
-  const model = coderModelPath();
-  if (model) args.push('-Model', model);
-  const cfg = coderConfig();
-  if (cfg.ctx && Number.isFinite(cfg.ctx)) args.push('-Ctx', String(cfg.ctx));
+export const CODER_DEFAULT_CTX = 65536;
+export const CODER_DEFAULT_PORT = 8080;
+export const CODER_ALIAS = 'Qwen3-Coder-30B-A3B-Instruct';
+
+/**
+ * llama-server command line for this install's model and context. This is the
+ * exact argument list `launch-server-8080.ps1` used to build; the script is
+ * kept for manual use only. Spawning the exe directly makes it a DIRECT child
+ * of the app: libuv's job object then kills it on every death path (graceful,
+ * crash, `taskkill /F`), which a grandchild under powershell.exe never was.
+ *
+ * Tuning (reference workstation, RTX 5090):
+ *  --jinja           native tool-call template on /v1/chat/completions
+ *  -c <ctx>          Q8 KV cache costs ~51 KB/token on this model
+ *  -b / -ub          large prefill batches; prompt processing is the bottleneck
+ *  --cache-reuse     salvage KV after the middle of the prompt changes
+ *  sampling          Qwen3-Coder model-card defaults
+ */
+export function coderServerArgs(model: string, cfg: CoderConfig = coderConfig()): string[] {
+  const ctx = cfg.ctx && Number.isFinite(cfg.ctx) ? cfg.ctx : CODER_DEFAULT_CTX;
+  const port = cfg.port && Number.isFinite(cfg.port) ? cfg.port : CODER_DEFAULT_PORT;
+  const args = [
+    '-m', model,
+    '--port', String(port),
+    '--host', '127.0.0.1',
+    '-ngl', '99',
+    '-c', String(ctx),
+    '-b', '4096',
+    '-ub', '1024',
+    '--cache-type-k', 'q8_0',
+    '--cache-type-v', 'q8_0',
+    '--flash-attn', 'on',
+    '--cache-reuse', '256',
+    '--jinja',
+    '--metrics',
+    '--temp', '0.7',
+    '--top-p', '0.8',
+    '--top-k', '20',
+    '--repeat-penalty', '1.05',
+    '--alias', CODER_ALIAS
+  ];
   if (Array.isArray(cfg.extraArgs)) args.push(...cfg.extraArgs.map(String));
   return args;
 }

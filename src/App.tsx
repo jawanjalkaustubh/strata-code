@@ -105,12 +105,29 @@ export const App: React.FC = () => {
   // Non-null while the License Agreement still needs acceptance.
   const [agreement, setAgreement] = useState<{ text: string; version: string } | null>(null);
 
+  // The loading screen is dismissed by the real boot gates - workspace,
+  // provider config, agreement state and the file tree round-trips - raced
+  // against 3 s, never by a fixed timer with invented stage text.
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setIsReady(true);
-    }, 700);
-    return () => clearTimeout(timer);
-  }, []);
+    let cancelled = false;
+    const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+    const gate = (p: any) => (p && typeof p.then === 'function' ? p : Promise.resolve());
+    const gates = Promise.allSettled([
+      gate(api?.getCurrentWorkspace?.()),
+      gate(api?.getProviderConfig?.()),
+      gate(api?.getAgreement?.()),
+      gate(api?.getFiles?.())
+    ]);
+    Promise.race([gates, sleep(3000)]).then(() => { if (!cancelled) setIsReady(true); });
+    return () => { cancelled = true; };
+  }, [api]);
+
+  // Tell the main process whether any buffer is unsaved, so closing the
+  // window prompts instead of discarding the edit.
+  const anyDirty = tabs.some(t => t.isDirty);
+  useEffect(() => {
+    api?.setDirty?.(anyDirty);
+  }, [anyDirty, api]);
 
   // Panel sizing and visibility
   const [isEditorOpen, setIsEditorOpen] = useState<boolean>(true);
@@ -829,8 +846,7 @@ export const App: React.FC = () => {
           <div className="h-full w-full bg-gradient-to-r from-role-worker-500 via-state-info-500 to-state-info-500 rounded-full animate-pulse shadow-[0_0_12px_rgba(45,212,191,0.6)]"></div>
         </div>
         <div className="mt-3 text-micro font-mono text-slate-400 flex items-center space-x-2">
-          <span>Ready! Launching Agent Studio...</span>
-          <span className="text-role-worker-400 font-bold">100%</span>
+          <span>Loading workspace and settings…</span>
         </div>
       </div>
     );

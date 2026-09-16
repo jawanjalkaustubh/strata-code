@@ -13,6 +13,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFile, spawn } from 'child_process';
 import { liveSessionPath, coderModelPath as resolveCoderModelPath } from './paths';
+import { readSiblingPresence, siblingsHolding, writePresence, normalizeModelName, appLabel, PresenceRecord } from './presence';
+import { killTrackedChildren } from './children';
 
 /**
  * Ollama context length for every request this app makes (chat, retry, inline completion). Ollama restarts the
@@ -22,6 +24,13 @@ import { liveSessionPath, coderModelPath as resolveCoderModelPath } from './path
  * Measured 2026-09-15: qwen3.8:27b resident at 32 K = 17.5 GB (its hybrid attention keeps the KV cache small).
  */
 export const OLLAMA_NUM_CTX = 32768;
+
+/**
+ * Ollama keep_alive for EVERY request this app makes (chat, retry, Ctrl+K). Ollama's keep_alive is per model and
+ * the last request wins, so a short value from one Strata app silently expired the model for every other app
+ * sharing the daemon (Code used to send '30s' while the coder was up). One family-wide constant, never shorter.
+ */
+export const OLLAMA_KEEP_ALIVE = '15m';
 
 export interface AgentMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -70,8 +79,12 @@ export interface ProviderConfig {
   openaiBaseUrl?: string;
   /** Set true to disable automatic VRAM-aware routing between llama-server and Ollama. */
   disableVramArbiter?: boolean;
-  /** Ollama keep_alive for loaded models. Default adapts to whether llama-server is resident. */
+  /** Ignored since the keep_alive unification: every request sends OLLAMA_KEEP_ALIVE. Kept so old configs still parse. */
   ollamaKeepAlive?: string;
+  /** Start the 26 GB coder server at launch instead of on the first coding prompt. Default false. */
+  coderAutoStart?: boolean;
+  /** Stop a coder server this app started after this many idle minutes (no run active). 0 disables. Default 20. */
+  coderIdleMinutes?: number;
   /** Shared secret for the local llama-server (`--api-key`). */
   localServerApiKey?: string;
   /** Run the project's typecheck/test after the worker edits files and feed failures back. Default true. */
@@ -116,10 +129,16 @@ export interface LocalEngineStatus {
   /** `loading`: OUR coder process (the one on the coder port) exists but is not answering yet - it already holds VRAM. */
   llamaServer: { up: boolean; loading?: boolean; alias?: string; nCtx?: number; pid?: number };
   ollamaLoaded: { name: string; vramBytes: number }[];
-  /** Ollama models that none of Strata's configured slots refer to - another app (or a manual `ollama run`) loaded them. Never evicted automatically. */
-  foreignOllama: { name: string; vramBytes: number }[];
-  /** Set when the coder server is down and a foreign Ollama model leaves too little VRAM to start it. */
+  /**
+   * Resident Ollama models THIS process did not send a load request for in this session - another Strata app
+   * (named in `heldBy` when its presence file lists the model), a manual `ollama run`, or this app's own leftover
+   * from a previous launch. Never evicted automatically.
+   */
+  foreignOllama: { name: string; vramBytes: number; heldBy?: string }[];
+  /** Set when the coder server is down and a foreign Ollama model leaves too little VRAM to start it, e.g. "Strata Photo (qwen3.8:27b)". */
   coderBlockedBy?: string;
+  /** Live sibling Strata apps found via their presence files. */
+  siblings?: { app: string; pid: number; models: string[] }[];
   gpu?: { totalMiB: number; usedMiB: number; freeMiB: number };
 }
 
@@ -148,9 +167,44 @@ export class AgentEngine {
   };
   static nonToolModels: Set<string> = new Set<string>(['gemma3:27b', 'gemma3', 'gemma:7b', 'gemma:2b', 'gemma']);
 
+  /**
+   * Ollama models THIS process sent a load request for in THIS session (normalized "name:tag"), added at send
+   * time. This - not the configured slot names, not /api/ps - is what "ours" means when deciding what may be
+   * unloaded: Strata Photo uses the same qwen3.8:27b, and matching on config names evicted Photo's resident
+   * 17.5 GB model 3 s after every Code launch.
+   */
+  readonly modelsWeLoaded = new Set<string>();
+
+  /** Set by main.ts: starts the coder server lazily (first coding prompt). Resolves true when a spawn happened. */
+  onCoderNeeded?: (reason: string) => Promise<boolean>;
+  /** Set by main.ts: pid of the coder process this app spawned, if it is alive. */
+  coderChildPid?: () => number | null;
+
+  /** Runs in flight (a new run aborts the previous one, so this is briefly 2). */
+  private activeRuns = 0;
+  isRunActive(): boolean {
+    return this.activeRuns > 0;
+  }
+
   constructor(workspaceDir: string) {
     this.workspaceDir = workspaceDir;
     this.tools = new ToolExecutor(workspaceDir);
+  }
+
+  /** Record that a load request for `model` is going out to Ollama; publishes the presence file for siblings. */
+  noteOllamaLoad(model: string) {
+    const n = normalizeModelName(model);
+    if (!n) return;
+    this.modelsWeLoaded.add(n);
+    writePresence(this.modelsWeLoaded);
+  }
+
+  /** Record that this app asked Ollama to unload `model`. */
+  noteOllamaUnload(model: string) {
+    const n = normalizeModelName(model);
+    if (!n) return;
+    this.modelsWeLoaded.delete(n);
+    writePresence(this.modelsWeLoaded);
   }
 
   setProviderConfig(config: ProviderConfig) {
@@ -361,13 +415,23 @@ export class AgentEngine {
 
   private liveDialogueQueue: Promise<void> = Promise.resolve();
 
+  /** Resolves once every queued live-session append has hit the disk (quit / Windows logoff). */
+  flushLiveDialogue(): Promise<void> {
+    return this.liveDialogueQueue;
+  }
+
   resetHistory() {
     this.stop();
     this.history = [];
     this.send('agent:status', { state: 'idle' });
   }
 
-  stop() {
+  /**
+   * Stops the run: aborts the model fetch AND tree-kills every tool command
+   * still running (the abort alone left `npm run dev` and friends alive).
+   * Returns the kill promise so the quit path can await it.
+   */
+  stop(): Promise<void> {
     this.flushTokens();
     if (this.abortController) {
       this.abortController.abort();
@@ -378,6 +442,7 @@ export class AgentEngine {
     }
     this.pendingApprovals.clear();
     this.send('agent:status', { state: 'idle' });
+    return killTrackedChildren('tool').then(() => undefined).catch(() => undefined);
   }
 
   resolveApproval(approvalId: string, approved: boolean) {
@@ -498,8 +563,12 @@ export class AgentEngine {
   // engine that is already holding its weights, rather than forcing a second
   // model into a card that cannot hold it.
   // =========================================================================
+  /** 10 s while a run is active; 30 s when idle (the status bar is the only caller then). */
   private static readonly ENGINE_PROBE_TTL_MS = 10000;
+  private static readonly ENGINE_PROBE_IDLE_TTL_MS = 30000;
   private engineStatus: LocalEngineStatus | null = null;
+  /** Last nvidia-smi reading, reused while nothing is resident so no probe spawns on a timer at idle. */
+  private lastGpuReading: { totalMiB: number; usedMiB: number; freeMiB: number } | undefined;
   private engineProbeInFlight: Promise<LocalEngineStatus> | null = null;
   private ollamaSizeCache: Map<string, number> | null = null;
   private serverAliasLower: string | null = null;
@@ -551,7 +620,8 @@ export class AgentEngine {
   /** Snapshot of both local engines. Cached briefly so a tool-heavy turn does not re-probe per call. */
   async probeLocalEngines(force = false): Promise<LocalEngineStatus> {
     const now = Date.now();
-    if (!force && this.engineStatus && now - this.engineStatus.checkedAt < AgentEngine.ENGINE_PROBE_TTL_MS) {
+    const ttl = this.isRunActive() ? AgentEngine.ENGINE_PROBE_TTL_MS : AgentEngine.ENGINE_PROBE_IDLE_TTL_MS;
+    if (!force && this.engineStatus && now - this.engineStatus.checkedAt < ttl) {
       return this.engineStatus;
     }
     if (this.engineProbeInFlight) return this.engineProbeInFlight;
@@ -564,12 +634,22 @@ export class AgentEngine {
         foreignOllama: []
       };
 
-      const [props, ps, gpu, coderPids] = await Promise.all([
+      const [props, ps] = await Promise.all([
         this.fetchJson(`${this.localServerBase}/props`, 1500, { Authorization: `Bearer ${this.localApiKey()}` }),
-        this.fetchJson('http://127.0.0.1:11434/api/ps'),
-        this.readGpuMemory(),
-        this.findCoderServerPids()
+        this.fetchJson('http://127.0.0.1:11434/api/ps')
       ]);
+
+      // The WMI scan (a powershell.exe spawn, ~250 ms) exists only to find a
+      // coder process that is loading and not answering /props yet. It is
+      // skipped when /props answered, when the coder is our own child (we
+      // know its pid), and on the idle status-bar timer with no run active.
+      const ownCoderPid = this.coderChildPid ? this.coderChildPid() : null;
+      let coderPids: number[] = [];
+      if (ownCoderPid) {
+        coderPids = [ownCoderPid];
+      } else if (!props && (force || this.isRunActive() || Date.now() < this.coderStartingUntil)) {
+        coderPids = await this.findCoderServerPids();
+      }
 
       // A coder server that is still loading its model does not answer /props,
       // but it already owns most of the card. The process is identified by
@@ -583,6 +663,14 @@ export class AgentEngine {
         status.llamaServer.loading = true;
       }
 
+      // nvidia-smi (another spawn) is skipped on the idle timer while nothing
+      // is resident anywhere; the previous reading is reused for the readout.
+      const nothingResident = !props && !status.llamaServer.loading && !(ps && Array.isArray(ps.models) && ps.models.length);
+      const gpu = (!force && !this.isRunActive() && nothingResident && this.lastGpuReading)
+        ? this.lastGpuReading
+        : await this.readGpuMemory();
+      if (gpu) this.lastGpuReading = gpu;
+
       if (props) {
         status.llamaServer.up = true;
         const nCtx = props?.default_generation_settings?.n_ctx ?? props?.n_ctx;
@@ -595,23 +683,32 @@ export class AgentEngine {
         }
       }
 
+      const siblings = readSiblingPresence();
+      status.siblings = siblings.map(s => ({ app: s.app, pid: s.pid, models: s.models }));
+
       if (ps && Array.isArray(ps.models)) {
         status.ollamaLoaded = ps.models.map((m: any) => ({
           name: String(m.name || m.model || ''),
           vramBytes: Number(m.size_vram || 0)
         })).filter((m: any) => m.name);
-        status.foreignOllama = status.ollamaLoaded.filter(m => !this.isOurModel(m.name));
+        status.foreignOllama = status.ollamaLoaded
+          .filter(m => !this.isOurModel(m.name))
+          .map(m => {
+            const holders = siblingsHolding(m.name, siblings);
+            return holders.length ? { ...m, heldBy: holders.map(h => appLabel(h.app)).join(' + ') } : { ...m };
+          });
       }
 
       status.gpu = gpu;
 
       // Can the coder even start? A foreign tenant (another app's model) that
       // leaves less than the coder needs blocks it - and is never evicted
-      // without the user asking.
+      // without the user asking. Named after the holder when a sibling's
+      // presence file lists it ("Strata Photo (qwen3.8:27b)").
       if (!status.llamaServer.up && !status.llamaServer.loading && status.foreignOllama.length && gpu) {
         const needMiB = this.coderServerNeedMiB();
         if (gpu.freeMiB < needMiB) {
-          status.coderBlockedBy = status.foreignOllama.map(m => m.name).join(', ');
+          status.coderBlockedBy = status.foreignOllama.map(m => m.heldBy ? `${m.heldBy} (${m.name})` : m.name).join(', ');
         }
       }
 
@@ -634,6 +731,12 @@ export class AgentEngine {
     this.engineStatus = null; // force the next probe to see it
   }
 
+  /** The coder process exited (or failed to spawn): stop reporting "loading" for the rest of the grace window. */
+  clearCoderStarting() {
+    this.coderStartingUntil = 0;
+    this.engineStatus = null;
+  }
+
   /** Port the coder server listens on, from the configured base URL (default 8080). */
   coderServerPort(): number {
     const m = this.localServerBase.match(/:(\d+)(?:\/|$)/);
@@ -654,16 +757,24 @@ export class AgentEngine {
     return 26000;
   }
 
-  /** True when `name` is one of the models Strata itself is configured to use (so evicting it only costs Strata a reload). */
+  /**
+   * True when THIS process sent Ollama a load request for `name` in this session. Ownership is never derived from
+   * config names (Photo shares qwen3.8:27b) nor from /api/ps. After a relaunch the set is empty, so this app's own
+   * leftover counts as foreign until its keep_alive expires - accepted.
+   */
   isOurModel(name: string): boolean {
-    const n = (name || '').toLowerCase();
+    const n = normalizeModelName(name);
+    return !!n && this.modelsWeLoaded.has(n);
+  }
+
+  /** True when `name` is one of the models a Strata slot is configured to use. Only used by the quit rule. */
+  isConfiguredModel(name: string): boolean {
+    const n = normalizeModelName(name);
     if (!n) return false;
     const c = this.providerConfig;
-    const ours = [c.codingModel, c.generalModel, c.hybridArchitectModel, c.hybridWorkerModel, c.ollamaModel]
+    return [c.codingModel, c.generalModel, c.hybridArchitectModel, c.hybridWorkerModel, c.ollamaModel]
       .filter(Boolean)
-      .map(s => String(s).toLowerCase());
-    // Ollama reports "name:tag"; a configured "name" without a tag matches its ":latest".
-    return ours.some(o => o === n || `${o}:latest` === n || o === n.replace(/:latest$/, ''));
+      .some(o => normalizeModelName(String(o)) === n);
   }
 
   /**
@@ -739,27 +850,69 @@ export class AgentEngine {
    * ping-pong that wedged both apps. `includeForeign` is for the explicit
    * "Free GPU" action the user clicks.
    */
-  async releaseOllamaVram(includeForeign = false): Promise<string[]> {
+  async releaseOllamaVram(includeForeign = false, timeoutMs = 5000): Promise<string[]> {
     const status = await this.probeLocalEngines(true);
+    const siblings = readSiblingPresence();
     const freed: string[] = [];
     for (const loaded of status.ollamaLoaded) {
       if (!loaded.vramBytes) continue;
-      if (!includeForeign && !this.isOurModel(loaded.name)) continue;
-      try {
-        await fetch('http://127.0.0.1:11434/api/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: loaded.name, keep_alive: 0 })
-        });
-        freed.push(loaded.name);
-      } catch {
-        // Ollama offline or already unloaded - nothing to free.
+      if (!includeForeign) {
+        if (!this.isOurModel(loaded.name)) continue;
+        // A model both apps loaded stays while the sibling's pid is alive.
+        const holders = siblingsHolding(loaded.name, siblings);
+        if (holders.length) {
+          console.log(`[VRAM Arbiter] Keeping ${loaded.name}: held by ${holders.map(h => appLabel(h.app)).join(', ')}.`);
+          continue;
+        }
       }
+      if (await this.unloadOllamaModel(loaded.name, timeoutMs)) freed.push(loaded.name);
     }
     if (freed.length) {
       this.engineStatus = null; // force a re-probe next time
       console.log(`[VRAM Arbiter] Evicted from Ollama: ${freed.join(', ')}`);
     }
+    return freed;
+  }
+
+  /** POST keep_alive:0 straight to the wire (no /api/version probe first), time-bounded. */
+  async unloadOllamaModel(model: string, timeoutMs = 2000): Promise<boolean> {
+    try {
+      await fetch('http://127.0.0.1:11434/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, keep_alive: 0 }),
+        signal: AbortSignal.timeout(timeoutMs)
+      });
+      this.noteOllamaUnload(model);
+      return true;
+    } catch {
+      // Ollama offline or already unloaded - nothing to free.
+      return false;
+    }
+  }
+
+  /**
+   * Quit rule (shared across the Strata apps): unload model M iff no live
+   * sibling presence lists M, and additionally only if M is in our own set
+   * or - when no sibling is alive at all - it is one of our configured
+   * models. A model listed by nobody that this app never loaded and no slot
+   * names (a user's own `ollama run`) is never touched.
+   */
+  async releaseOllamaVramAtQuit(timeoutMs = 2000): Promise<string[]> {
+    const ps = await this.fetchJson('http://127.0.0.1:11434/api/ps', timeoutMs);
+    if (!ps || !Array.isArray(ps.models)) return [];
+    const siblings: PresenceRecord[] = readSiblingPresence();
+    const anySibling = siblings.length > 0;
+    const freed: string[] = [];
+    await Promise.all(ps.models.map(async (m: any) => {
+      const name = String(m.name || m.model || '');
+      if (!name) return;
+      if (siblingsHolding(name, siblings).length) return;
+      const ours = this.isOurModel(name);
+      if (!ours && (anySibling || !this.isConfiguredModel(name))) return;
+      if (await this.unloadOllamaModel(name, timeoutMs)) freed.push(name);
+    }));
+    if (freed.length) console.log(`[VRAM Arbiter] Quit: unloaded ${freed.join(', ')} from Ollama.`);
     return freed;
   }
 
@@ -1796,14 +1949,10 @@ You are the Autonomous Implementation Worker on this NVIDIA RTX 5090 workstation
       model: model || 'qwen3.8:27b',
       messages: formattedOllamaMessages,
       stream: true,
-      // Release VRAM quickly when llama-server also needs the card. Ollama's
-      // default (5m) meant a single fallback turn could leave 17 GB pinned long
-      // after the turn ended.
-      // 2m (was 5m) when the coder server is absent: long enough to avoid a
-      // reload between turns, short enough that an app relaunch that
-      // auto-starts the coder is not fighting a stale 17 GB tenant.
-      keep_alive: this.providerConfig.ollamaKeepAlive
-        || (this.engineStatus?.llamaServer.up ? '30s' : '2m'),
+      // One family-wide value on every request (see OLLAMA_KEEP_ALIVE). The
+      // old '30s'-while-the-coder-is-up trick expired Strata Photo's resident
+      // model too, because Ollama's keep_alive is per model, last request wins.
+      keep_alive: OLLAMA_KEEP_ALIVE,
       options: {
         num_ctx: numCtx,
         temperature: taskMode === 'general' ? 0.7 : 0.2,
@@ -1817,6 +1966,9 @@ You are the Autonomous Implementation Worker on this NVIDIA RTX 5090 workstation
     }
 
     let res: Response;
+    // Ownership is recorded at SEND time (before the response), so a quit
+    // mid-load still knows this model is ours to unload.
+    this.noteOllamaLoad(payload.model);
     try {
       res = await fetch('http://127.0.0.1:11434/api/chat', {
         method: 'POST',
@@ -1889,6 +2041,7 @@ You are the Autonomous Implementation Worker on this NVIDIA RTX 5090 workstation
             if (fallbackModel && fallbackModel !== payload.model) {
               this.send('agent:token', { token: `⚠️ Model *${payload.model}* was not found. Automatically switched to installed model **${fallbackModel}**.\n\n`, model: fallbackModel });
               payload.model = fallbackModel;
+              this.noteOllamaLoad(payload.model);
               res = await fetch('http://127.0.0.1:11434/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2024,6 +2177,25 @@ You are the Autonomous Implementation Worker on this NVIDIA RTX 5090 workstation
     model: string = 'qwen2.5-coder:32b',
     autoMode: boolean = true,
     taskMode: string = 'coding',
+    editorContext?: EditorContext,
+    images?: string[]
+  ) {
+    // `activeRuns` is what "a run is active" means for the coder idle timer
+    // and the probe cadence; `abortController` alone is not cleared when a
+    // run ends normally.
+    this.activeRuns++;
+    try {
+      await this.runTurn(prompt, model, autoMode, taskMode, editorContext, images);
+    } finally {
+      this.activeRuns = Math.max(0, this.activeRuns - 1);
+    }
+  }
+
+  private async runTurn(
+    prompt: string,
+    model: string,
+    autoMode: boolean,
+    taskMode: string,
     editorContext?: EditorContext,
     images?: string[]
   ) {
@@ -2419,7 +2591,7 @@ WORKING METHOD (follow exactly):
         if (coderResident && foreignMiB > 4096 && typeof freeMiB === 'number' && freeMiB < 3072) {
           blockedMessage = `The GPU is oversubscribed: the coder server and ${foreignNames} from another app are both resident, so generation would crawl and either server may crash. Not starting this run. Close the model in the other app, or click "Free GPU" in the status bar to unload it (that app will reload it when it needs it).`;
         } else if (!coderResident && status.coderBlockedBy && this.isPort8080Model(workerModel)) {
-          blockedMessage = `The coder server is not running and cannot start: ${foreignNames} from another app holds the GPU (${typeof freeMiB === 'number' ? (freeMiB / 1024).toFixed(1) : '?'} GB free, ~${(this.coderServerNeedMiB() / 1024).toFixed(0)} GB needed). Close the model in the other app, or click "Free GPU" in the status bar.`;
+          blockedMessage = `The coder server is not running and cannot start: GPU held by ${status.coderBlockedBy} (${typeof freeMiB === 'number' ? (freeMiB / 1024).toFixed(1) : '?'} GB free, ~${(this.coderServerNeedMiB() / 1024).toFixed(0)} GB needed). Close the model in the other app, or click "Free GPU" in the status bar to evict it.`;
         }
       } catch {
         // Pre-flight is best-effort.
@@ -2430,6 +2602,20 @@ WORKING METHOD (follow exactly):
         this.send('agent:status', { state: 'idle' });
         return;
       }
+    }
+
+    // Lazy coder start: the 26 GB server is not pinned for the app's lifetime
+    // any more - it starts on the first prompt that actually targets it (and
+    // never from `resolveLocalWorker`, which also answers "which model would
+    // run"). The arbiter's Case 0 below then waits for it to come up.
+    if (this.onCoderNeeded && this.isPort8080Model(workerModel)) {
+      try {
+        const st = await this.probeLocalEngines();
+        if (!st.llamaServer.up && !st.llamaServer.loading && !st.coderBlockedBy) {
+          const spawned = await this.onCoderNeeded('first coding prompt');
+          if (spawned) notice('🚀 Starting the coder server (first coding prompt of this session) — the model takes 10–60 s to load.');
+        }
+      } catch {}
     }
 
     /** Tool cards attach to the LAST assistant bubble, so make sure that bubble is the worker's. */

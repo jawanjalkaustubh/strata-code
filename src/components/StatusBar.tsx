@@ -6,9 +6,11 @@ export interface EngineStatus {
   llamaServer: { up: boolean; loading?: boolean; alias?: string; nCtx?: number; pid?: number };
   ollamaLoaded: { name: string; vramBytes: number }[];
   /** Ollama models another app loaded; Strata never evicts these on its own. */
-  foreignOllama?: { name: string; vramBytes: number }[];
-  /** Set when the coder is down and a foreign model leaves too little VRAM to start it. */
+  foreignOllama?: { name: string; vramBytes: number; heldBy?: string }[];
+  /** Set when the coder is down and a foreign model leaves too little VRAM to start it, e.g. "Strata Photo (qwen3.8:27b)". */
   coderBlockedBy?: string;
+  /** Live sibling Strata apps (presence files). */
+  siblings?: { app: string; pid: number; models: string[] }[];
   /** True when this app instance spawned the coder server and will stop it on quit. */
   coderManaged?: boolean;
   coderLog?: string;
@@ -28,9 +30,14 @@ function fmtCtx(n?: number): string {
 type VramTone = 'ok' | 'warn' | 'danger';
 interface VramView { usedGiB: number; totalGiB: number; freeGiB: number; pct: number; tone: VramTone }
 
+type CoderEvent = { kind: 'starting' | 'up' | 'exited' | 'error' | 'stopped'; detail: string };
+
 const StatusBarInner: React.FC<{ workspace?: string }> = ({ workspace }) => {
   const [status, setStatus] = useState<EngineStatus | null>(null);
   const [failed, setFailed] = useState(false);
+  // Last lifecycle push from the main process: why the coder is offline
+  // (missing binary, no model, exited with a code, GPU held by a sibling).
+  const [coderEvent, setCoderEvent] = useState<CoderEvent | null>(null);
 
   const poll = useCallback(async () => {
     const api = (window as any).api;
@@ -46,10 +53,17 @@ const StatusBarInner: React.FC<{ workspace?: string }> = ({ workspace }) => {
 
   useEffect(() => {
     poll();
-    // The backend caches this probe for 10s, so polling at the same cadence
-    // costs essentially nothing beyond one IPC round-trip.
-    const t = setInterval(poll, 10000);
-    return () => clearInterval(t);
+    // The backend caches this probe for 30 s while no run is active (10 s
+    // during one) and skips its process scans at idle; coder lifecycle
+    // changes are pushed, so a slow poll loses nothing.
+    const t = setInterval(poll, 30000);
+    const api = (window as any).api;
+    const unsub = api?.onCoderEvent?.((ev: CoderEvent) => {
+      setCoderEvent(ev);
+      // Re-probe shortly after: the process has just appeared or gone.
+      setTimeout(poll, 500);
+    });
+    return () => { clearInterval(t); if (typeof unsub === 'function') unsub(); };
   }, [poll]);
 
   const vram: VramView | null = useMemo<VramView | null>(() => {
@@ -105,16 +119,21 @@ const StatusBarInner: React.FC<{ workspace?: string }> = ({ workspace }) => {
     poll();
   }, [busy, poll]);
 
+  // A failure pushed by the main process explains an offline coder.
+  const coderFailure = !serverUp && !serverLoading && coderEvent && (coderEvent.kind === 'error' || coderEvent.kind === 'exited')
+    ? coderEvent.detail : '';
   const coderLabel = serverUp
     ? (status?.llamaServer.alias || 'llama-server')
     : serverLoading ? 'coder loading…'
     : blockedBy ? 'coder blocked'
+    : coderFailure ? 'coder failed'
     : 'coder offline';
   const coderTitle = serverUp
-    ? `Coder server on :8080${status?.coderManaged ? ' — started by this app; stops when the app closes' : ' — started outside the app; stops when the app closes'}${status?.coderLog ? `\nLog: ${status.coderLog}` : ''}`
+    ? `Coder server on :8080${status?.coderManaged ? ' — started by this app; stops when idle or when the app closes' : ' — started outside the app; stops when the app closes'}${status?.coderLog ? `\nLog: ${status.coderLog}` : ''}`
     : serverLoading ? 'The coder server is reading its model into VRAM (typically 10–60 s). Prompts sent now wait for it.'
-    : blockedBy ? `Cannot start: ${blockedBy} (loaded by another app) holds the GPU. "Free GPU" unloads it and starts the coder; the other app reloads its model when it next needs it.`
-    : 'No coder server. It starts automatically on launch when the GPU is free.';
+    : blockedBy ? `GPU held by ${blockedBy}. "Free GPU" evicts it and starts the coder; the other app reloads its model when it next needs it. Clears itself when that app releases the model.`
+    : coderFailure ? coderFailure
+    : 'No coder server yet. It starts on the first coding prompt (26 GB, 10–60 s) and stops again after the idle timeout.';
 
   return (
     <div className="h-7 shrink-0 flex items-center gap-4 px-3 bg-studio-surface border-t border-studio-border text-micro font-mono text-studio-muted select-none">
@@ -137,14 +156,19 @@ const StatusBarInner: React.FC<{ workspace?: string }> = ({ workspace }) => {
             :8080 · {fmtCtx(status?.llamaServer.nCtx)} ctx
           </span>
         )}
+        {!serverUp && !serverLoading && (blockedBy || coderFailure) && (
+          <span className="truncate max-w-[360px] text-studio-subtle" title={blockedBy ? `GPU held by ${blockedBy}` : coderFailure}>
+            {blockedBy ? `GPU held by ${blockedBy}` : coderFailure}
+          </span>
+        )}
         {(blockedBy || (!serverUp && !serverLoading && foreign.length > 0)) && (
           <button
             onClick={takeGpu}
             disabled={busy !== null}
             className="ml-1 px-1.5 py-0.5 rounded-control border border-state-danger-500/40 bg-state-danger-500/10 text-state-danger-300 hover:bg-state-danger-500/20 disabled:opacity-50 shrink-0"
-            title={`Unload ${foreign.map(f => f.name).join(', ')} from Ollama and start the coder server`}
+            title={`Evict ${foreign.map(f => f.heldBy ? `${f.name} (${f.heldBy})` : f.name).join(', ')} from Ollama and start the coder server. Never done automatically.`}
           >
-            {busy === 'take' ? 'freeing…' : 'Free GPU'}
+            {busy === 'take' ? 'evicting…' : 'Free GPU'}
           </button>
         )}
         {serverUp && (
@@ -197,7 +221,7 @@ const StatusBarInner: React.FC<{ workspace?: string }> = ({ workspace }) => {
         className="flex items-center gap-1.5 shrink-0"
         title={
           (status?.ollamaLoaded || []).length
-            ? `Resident in Ollama: ${status!.ollamaLoaded.map(m => `${m.name} (${(m.vramBytes / 1024 ** 3).toFixed(1)} GiB)`).join(', ')}${foreign.length ? `\nLoaded by another app: ${foreign.map(f => f.name).join(', ')}` : ''}`
+            ? `Resident in Ollama: ${status!.ollamaLoaded.map(m => `${m.name} (${(m.vramBytes / 1024 ** 3).toFixed(1)} GiB)`).join(', ')}${foreign.length ? `\nNot loaded by this app: ${foreign.map(f => f.heldBy ? `${f.name} — held by ${f.heldBy}` : f.name).join(', ')}` : ''}`
             : 'Ollama models currently resident in VRAM'
         }
       >

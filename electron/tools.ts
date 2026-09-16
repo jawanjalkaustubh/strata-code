@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFile } from 'child_process';
+import { trackChild, killTree } from './children';
 
 export interface ToolResult {
   success: boolean;
@@ -625,33 +626,47 @@ export class ToolExecutor {
       //                   roughly 0.3-1s of startup on EVERY agent tool call.
       //   -NonInteractive makes a command that wants input fail fast rather than
       //                   hanging until the timeout.
-      execFile(
+      // The timeout is our own timer with a tree-kill: Node's `timeout` option
+      // only TerminateProcess'd powershell.exe, so an `npm run dev` it had
+      // started kept running (and the "[TIMEOUT] ... was terminated" text was
+      // a lie for everything below the shell).
+      let timedOut = false;
+      const child = execFile(
         'powershell.exe',
         ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', utf8Prefix + command],
         {
           cwd: this.workspaceDir,
-          timeout,
           maxBuffer: 10 * 1024 * 1024, // 10MB buffer
           windowsHide: true,
           env: { ...process.env, PYTHONIOENCODING: 'utf-8', CI: '1', FORCE_COLOR: '0', NO_COLOR: '1' }
         },
         (error, stdout, stderr) => {
+          clearTimeout(timer);
           let output = (stdout + (stderr ? `\n[STDERR]\n${stderr}` : '')).trim();
-          if (error && error.killed) {
-            output = `[TIMEOUT] Command timed out after ${Math.round(timeout / 1000)} seconds and was terminated.\n${output}`;
+          // `strataKilled` is stamped by killTrackedChildren (user Stop / quit).
+          const killed = timedOut || (child as any).strataKilled === true || !!(error && error.killed);
+          if (timedOut) {
+            output = `[TIMEOUT] Command timed out after ${Math.round(timeout / 1000)} seconds; its whole process tree was terminated.\n${output}`;
+          } else if (killed) {
+            output = `[STOPPED] Command was terminated (stop requested).\n${output}`;
           } else if (!output && error) {
             output = `Command failed with error: ${error.message}`;
           } else if (!output) {
             output = 'Executed with no output';
           }
           const exitCode = error && typeof (error as any).code === 'number' ? (error as any).code : (error ? 1 : 0);
-          if (error && !error.killed) output = `[exit code ${exitCode}]\n${output}`;
+          if (error && !killed) output = `[exit code ${exitCode}]\n${output}`;
           resolve({
-            success: !error,
+            success: !error && !killed,
             output: output.slice(0, 8000)
           });
         }
       );
+      trackChild(child, 'tool');
+      const timer = setTimeout(() => {
+        timedOut = true;
+        killTree(child.pid).then(() => { try { child.kill(); } catch {} });
+      }, timeout);
     });
   }
 }
