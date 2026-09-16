@@ -79,13 +79,6 @@ partial downloads.
 | Coder model | `models\` next to the app |
 | General model | Ollama's store (`%USERPROFILE%\.ollama`) |
 
-## Free software, voluntary donations
-
-Strata Code is free for everyone. If it is useful to you and you want to help
-fund new features and future apps, there is a **Support development** button in
-the About dialog and a small **donate** link in the status bar. Donating is
-entirely optional, buys nothing, and changes nothing about the app.
-
 ## Reporting problems
 
 Open an issue with: the prompt you sent, what the chat showed, the status bar

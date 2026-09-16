@@ -1,6 +1,6 @@
 # Strata Code — End User License Agreement
 
-**Version 1.1 — 12 September 2026**
+**Version 1.2 — 15 September 2026**
 
 This agreement is between you ("you") and Kaustubh Jawanjal ("the Author") and covers the software called Strata Code, including its installer, bundled runtime components, documentation and any updates (together, "the Software"). The Software is made available free of charge.
 
@@ -55,47 +55,39 @@ This agreement is between you ("you") and Kaustubh Jawanjal ("the Author") and c
 
 6.3. Third-party components (Ollama, Windows, your GPU driver, package managers) may connect to the internet or collect data under their own policies. Downloads from ollama.com and huggingface.co disclose your IP address to those services.
 
-## 7. Donations
-
-7.1. The Author may offer a way to donate money towards the development of the Software and related projects. **Donations are entirely voluntary.** The Software is free whether or not you donate, and nothing in the Software is unlocked, guaranteed, or owed in return for a donation.
-
-7.2. A donation is a gift, not a purchase. It does not buy a license, features, support, priority, or any commitment about future development, and it does not make you an investor or give you any rights in the Software or the Author's projects. Donations are non-refundable except where the law requires otherwise.
-
-7.3. Donations are processed by third-party payment platforms (for example a donation page hosted by GitHub Sponsors, Ko-fi, Buy Me a Coffee, or PayPal). Those platforms handle your payment details under their own terms and privacy policies; the Author does not receive or store your card or bank information. Donations are not represented as charitable contributions or as tax-deductible.
-
-## 8. Feedback
+## 7. Feedback
 
 Any feedback, suggestions, bug reports or ideas you provide may be used by the Author for any purpose without obligation or compensation to you. You confirm you have the right to provide them.
 
-## 9. No warranty
+## 8. No warranty
 
 **The Software is provided "AS IS" and "AS AVAILABLE", without warranty of any kind.** To the fullest extent permitted by law, the Author disclaims all warranties, express or implied, including warranties of merchantability, fitness for a particular purpose, title, non-infringement, accuracy, and uninterrupted or error-free operation. No advice or information from the Author creates a warranty.
 
-## 10. Limitation of liability
+## 9. Limitation of liability
 
 **To the fullest extent permitted by law, the Author will not be liable for any indirect, incidental, special, consequential, exemplary or punitive damages, or for any loss of data, files, profits, revenue, business, goodwill or use, arising out of or related to the Software or this agreement, however caused and under any theory of liability, even if advised of the possibility of such damages.** The Author's total liability for all claims relating to the Software will not exceed the amount you paid for it, which is zero.
 
 Some jurisdictions do not allow certain exclusions or limitations; in those places these apply to the maximum extent the law permits, and nothing in this agreement excludes liability that cannot lawfully be excluded.
 
-## 11. Your responsibilities and indemnity
+## 10. Your responsibilities and indemnity
 
 You agree to use the Software lawfully and in accordance with this agreement, and to defend and hold the Author harmless from claims, losses and expenses (including reasonable legal fees) arising from your use of the Software, your workspaces and data, the output you choose to use, or your breach of this agreement.
 
-## 12. Term and termination
+## 11. Term and termination
 
-This agreement lasts until terminated. It ends automatically if you breach it. The Author may end it, or stop distributing the Software, at any time. On termination you must stop using the Software and delete your copies. Sections 2, 3, 5, 7, 8, 9, 10, 11 and 13 survive termination.
+This agreement lasts until terminated. It ends automatically if you breach it. The Author may end it, or stop distributing the Software, at any time. On termination you must stop using the Software and delete your copies. Sections 2, 3, 5, 7, 8, 9, 10 and 12 survive termination.
 
-## 13. General
+## 12. General
 
-13.1. You must be at least 18 years old, and you agree to comply with applicable export control and sanctions laws.
+12.1. You must be at least 18 years old, and you agree to comply with applicable export control and sanctions laws.
 
-13.2. This agreement is governed by the laws of the jurisdiction in which the Author resides, without regard to conflict-of-laws rules, and disputes will be brought in the courts of that jurisdiction, unless the law of your country of residence gives you rights that cannot be waived.
+12.2. This agreement is governed by the laws of the jurisdiction in which the Author resides, without regard to conflict-of-laws rules, and disputes will be brought in the courts of that jurisdiction, unless the law of your country of residence gives you rights that cannot be waived.
 
-13.3. This is the entire agreement about the Software and replaces any earlier understanding. If any part is unenforceable, the rest remains in effect. Failure to enforce a right is not a waiver. You may not assign this agreement; the Author may.
+12.3. This is the entire agreement about the Software and replaces any earlier understanding. If any part is unenforceable, the rest remains in effect. Failure to enforce a right is not a waiver. You may not assign this agreement; the Author may.
 
-13.4. The Author may update this agreement for future versions of the Software; the version shown to you when you accept is the one that applies to that version.
+12.4. The Author may update this agreement for future versions of the Software; the version shown to you when you accept is the one that applies to that version.
 
-## 14. Contact
+## 13. Contact
 
 Questions about this agreement: contact the Author through the repository where you obtained the Software.
 

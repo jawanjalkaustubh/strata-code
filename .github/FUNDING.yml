@@ -1,8 +1,0 @@
-# Shows a "Sponsor" button on the GitHub repository page. Uncomment the line
-# for the platform you use and put your handle / URL in. Details:
-# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
-#
-# github: your-github-username        # GitHub Sponsors (needs a sponsor profile)
-# ko_fi: your-kofi-name               # https://ko-fi.com/your-kofi-name
-# buy_me_a_coffee: your-bmc-name      # https://buymeacoffee.com/your-bmc-name
-# custom: ["https://paypal.me/yourname"]

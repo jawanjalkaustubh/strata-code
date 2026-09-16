@@ -72,7 +72,7 @@ the zip; their models and Ollama stay installed, and `Install.bat` skips them.
 > **Requirements:** Windows 10/11 x64, NVIDIA GPU with 22 GB+ VRAM (32 GB
 > recommended), driver 528+, 24 GB+ RAM, ~50 GB free disk, ~45 GB download.
 >
-> **Free software, voluntary donations.** Strata Code is free. If it helps you, the About dialog has a Support development button.
+> **Free.** Strata Code is free to use and share.
 >
 > **Install:** extract the zip anywhere with 30 GB free, run `Install.bat`,
 > wait for the downloads (they resume if interrupted), then launch from the
@@ -120,25 +120,3 @@ repository.
 
 Put the same text in the release description (or link to `EULA.md` in the
 repo) so people see it before downloading.
-
-## Donations
-
-The app shows a **Support development** button in the About dialog and a
-**donate** link in the status bar, both opening the URL in `support.json` at the
-repo root. They are hidden while `donateUrl` is empty. Fill in `support.json`
-(donate page, project page, issues page), rebuild, and repackage. Also fill in
-`.github/FUNDING.yml` so GitHub shows a Sponsor button on the repository.
-
-Picking a platform (all let people give without an account of their own):
-
-| Platform | Fee on donations | Notes |
-|---|---|---|
-| Ko-fi | 0 % platform fee (PayPal/Stripe fees apply) | Quickest to set up; one page, one link |
-| GitHub Sponsors | 0 % | Needs a sponsor profile approved by GitHub and a Stripe/bank setup; shows the Sponsor button natively |
-| Buy Me a Coffee | 5 % | Similar to Ko-fi |
-| PayPal.me | PayPal fees | No page, just a link |
-
-Say in the release notes and on the page that the software is free and
-donations are voluntary; the EULA already says so (section 7). Keep records:
-depending on where you live, donations can count as taxable income. That is a
-question for an accountant, not for this document.

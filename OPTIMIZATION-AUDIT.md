@@ -509,3 +509,7 @@ Verified: installer decline/accept/re-run against a throwaway AppData (correct e
 - `support.json` (repo root) holds `donateUrl`, `projectUrl`, `issuesUrl`, `donateLabel`; `src/support.ts` validates them (https only). About dialog gets a **Support development** button plus "Project page" / "Report a problem" links and a one-line "free, donations voluntary" note; the status bar gets a small **donate** link. All hidden while the URL is empty. `.github/FUNDING.yml` template for GitHub's Sponsor button.
 - Verified with test URLs over CDP: both controls render with the configured label/link; clicking calls the real `shell:open-external` handler (the preload bridge is frozen, so the click could not be intercepted - it opened the test URL in the browser). Shipped build has empty URLs → no buttons until `support.json` is filled and the app rebuilt.
 - RELEASE.md: public repository required for public downloads; platform comparison (Ko-fi 0 %, GitHub Sponsors 0 % with approval, Buy Me a Coffee 5 %, PayPal.me); tax note.
+
+### Addendum — donations removed (2026-09-15)
+
+At the user's request Strata Code is simply free: no donate button (About, status bar, Help menu), no `support.json` donate fields, no `.github/FUNDING.yml`, EULA v1.2 without the Donations section (renumbered 7–13), README/RELEASE wording changed to "free to use and share". About keeps the project-page and report-a-problem links. Package rebuilt and the v1.0.0 release asset and notes replaced on GitHub.

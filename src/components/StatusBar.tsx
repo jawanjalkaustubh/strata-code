@@ -1,6 +1,5 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
-import { Cpu, HardDrive, Zap, CircleAlert, Heart } from 'lucide-react';
-import { SUPPORT, openExternal } from '../support';
+import { Cpu, HardDrive, Zap, CircleAlert } from 'lucide-react';
 
 export interface EngineStatus {
   checkedAt: number;
@@ -216,16 +215,6 @@ const StatusBarInner: React.FC<{ workspace?: string }> = ({ workspace }) => {
         {workspace}
       </span>
       <span className="text-state-ok-400 shrink-0">$0.00 · offline</span>
-      {SUPPORT.donateUrl && (
-        <button
-          onClick={() => openExternal(SUPPORT.donateUrl)}
-          data-testid="statusbar-donate"
-          className="flex items-center gap-1 shrink-0 text-state-danger-300 hover:text-state-danger-200"
-          title={`${SUPPORT.donateLabel} — voluntary, opens ${SUPPORT.donateUrl}`}
-        >
-          <Heart size={10} /> donate
-        </button>
-      )}
     </div>
   );
 };

@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { X, Sparkles, Cpu, HardDrive, ShieldCheck, Code2, Zap, Heart, Bug, ExternalLink } from 'lucide-react';
+import { X, Sparkles, Cpu, HardDrive, ShieldCheck, Code2, Zap, Bug, ExternalLink } from 'lucide-react';
 
 import { SystemInfo, HybridTier } from '../types';
 import { STRATA_ICON } from '../assets/logo';
@@ -123,36 +123,18 @@ export const AboutModal: React.FC<AboutModalProps> = ({
             </div>
           </div>
 
-          {/* Support / links. Free for everyone; donations are voluntary. */}
-          {(SUPPORT.donateUrl || SUPPORT.projectUrl || SUPPORT.issuesUrl) && (
-            <div className="p-3 rounded-card bg-studio-panel/50 border border-studio-border space-y-2" data-testid="about-support">
-              {SUPPORT.donateUrl && (
-                <button
-                  onClick={() => openExternal(SUPPORT.donateUrl)}
-                  data-testid="about-donate"
-                  className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-control bg-state-danger-500/15 border border-state-danger-500/40 text-state-danger-200 hover:bg-state-danger-500/25 text-xs font-medium transition"
-                  title={SUPPORT.donateUrl}
-                >
-                  <Heart size={14} className="text-state-danger-400" />
-                  <span>{SUPPORT.donateLabel}</span>
+          {/* Project links */}
+          {(SUPPORT.projectUrl || SUPPORT.issuesUrl) && (
+            <div className="flex items-center justify-center gap-4 text-micro" data-testid="about-links">
+              {SUPPORT.projectUrl && (
+                <button onClick={() => openExternal(SUPPORT.projectUrl)} className="flex items-center gap-1 text-slate-300 hover:text-white" title={SUPPORT.projectUrl}>
+                  <ExternalLink size={12} /> Project page
                 </button>
               )}
-              <div className="text-micro text-slate-400 text-center">
-                Strata Code is free. Donations are voluntary and fund new features and apps; they buy nothing and are not required.
-              </div>
-              {(SUPPORT.projectUrl || SUPPORT.issuesUrl) && (
-                <div className="flex items-center justify-center gap-4 text-micro">
-                  {SUPPORT.projectUrl && (
-                    <button onClick={() => openExternal(SUPPORT.projectUrl)} className="flex items-center gap-1 text-slate-300 hover:text-white" title={SUPPORT.projectUrl}>
-                      <ExternalLink size={12} /> Project page
-                    </button>
-                  )}
-                  {SUPPORT.issuesUrl && (
-                    <button onClick={() => openExternal(SUPPORT.issuesUrl)} className="flex items-center gap-1 text-slate-300 hover:text-white" title={SUPPORT.issuesUrl}>
-                      <Bug size={12} /> Report a problem
-                    </button>
-                  )}
-                </div>
+              {SUPPORT.issuesUrl && (
+                <button onClick={() => openExternal(SUPPORT.issuesUrl)} className="flex items-center gap-1 text-slate-300 hover:text-white" title={SUPPORT.issuesUrl}>
+                  <Bug size={12} /> Report a problem
+                </button>
               )}
             </div>
           )}
