@@ -11,7 +11,11 @@ import {
 } from './paths';
 import { deletePresence } from './presence';
 import { trackChild, killTree, killTrackedChildren } from './children';
-
+// Real-path confinement with reparse-point/UNC/ADS rejection lives in tools.ts;
+// reuse it here so the workspace:read-file / save-file / create-file IPC
+// handlers (renderer-reachable) get the same protection as the agent's file
+// tools instead of a second, weaker implementation.
+import { confinePath } from './tools';
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 const __filename = fileURLToPath(import.meta.url);
@@ -323,9 +327,14 @@ function createWindow() {
   agent.setSender(mainWindow.webContents);
   const win = mainWindow;
 
-  // Prevent external links from hijacking window; open in system browser
+  // Prevent external links from hijacking window; open in system browser.
+  // Threat: rendered content (e.g. a link inside model output) could hand this a
+  // javascript:, file: or other non-http(s) URL; shell.openExternal would then run
+  // it outside the page sandbox. Mirror the shell:open-external allowlist below.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    if (url && (url.startsWith('https://') || url.startsWith('http://'))) {
+      shell.openExternal(url);
+    }
     return { action: 'deny' };
   });
 
@@ -792,25 +801,40 @@ ipcMain.handle('workspace:get-files', async (_e, dirPath?: string) => {
   return { root: currentWorkspace, items: getTree(root, 0) };
 });
 
+// Threat: these three handlers take a renderer-supplied path and touch the
+// filesystem with the Electron process's own rights. A compromised renderer (XSS
+// in rendered model output, a malicious MCP/tool response, etc.) could otherwise
+// read or overwrite ANY file the OS account can reach - SSH keys, other projects,
+// system files - simply by sending an absolute path. Confine every path to the
+// same roots the agent's own tools are restricted to (DEFAULT_ALLOWED_ROOTS plus
+// the current workspace) before it reaches fs.
 ipcMain.handle('workspace:read-file', async (_e, filePath: string) => {
+  const confined = confinePath(filePath, agent.tools.allowedRoots, currentWorkspace);
+  if (!confined.ok) {
+    return `Error: ${confined.reason}`;
+  }
   try {
-    if (!fs.existsSync(filePath)) {
+    if (!fs.existsSync(confined.path)) {
       return 'Error: File does not exist.';
     }
-    const stat = fs.statSync(filePath);
+    const stat = fs.statSync(confined.path);
     if (stat.size > 5 * 1024 * 1024) {
       return `⚠️ File exceeds 5MB (${(stat.size / (1024 * 1024)).toFixed(1)}MB). Too large to display safely in editor.`;
     }
-    return fs.readFileSync(filePath, 'utf-8');
+    return fs.readFileSync(confined.path, 'utf-8');
   } catch (err: any) {
     return `Error: ${err.message}`;
   }
 });
 
 ipcMain.handle('workspace:save-file', async (_e, filePath: string, content: string) => {
+  const confined = confinePath(filePath, agent.tools.allowedRoots, currentWorkspace);
+  if (!confined.ok) {
+    return { success: false, error: confined.reason };
+  }
   try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, content, 'utf-8');
+    fs.mkdirSync(path.dirname(confined.path), { recursive: true });
+    fs.writeFileSync(confined.path, content, 'utf-8');
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message };
@@ -818,8 +842,12 @@ ipcMain.handle('workspace:save-file', async (_e, filePath: string, content: stri
 });
 
 ipcMain.handle('workspace:create-file', async (_e, filePath: string) => {
+  const confined = confinePath(filePath, agent.tools.allowedRoots, currentWorkspace);
+  if (!confined.ok) {
+    return { success: false, error: confined.reason };
+  }
   try {
-    const full = path.join(currentWorkspace, filePath);
+    const full = confined.path;
     fs.mkdirSync(path.dirname(full), { recursive: true });
     if (!fs.existsSync(full)) {
       fs.writeFileSync(full, '', 'utf-8');
@@ -1260,6 +1288,25 @@ ipcMain.handle('terminal:run-command', async (_e, command: string) => {
   });
 });
 
+// Threat: `provider:save-config` is reachable from the renderer, and its config is
+// also re-read from disk on every launch. If `openaiBaseUrl` (or any future
+// similarly-named field) pointed at a non-loopback host, every prompt plus the
+// bearer/API key configured alongside it would be sent there instead of the local
+// llama-server - a compromised renderer, or a tampered provider-config.json, could
+// exfiltrate both silently. Restrict every URL-shaped field to loopback with an
+// explicit port.
+function isLoopbackUrlWithPort(value: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(value);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== 'http:') return false;
+  if (!u.port) return false;
+  return u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '::1';
+}
+
 // Multi-Provider configuration IPC handlers
 ipcMain.handle('provider:get-config', async () => {
   return getStoredProviderConfig();
@@ -1267,6 +1314,17 @@ ipcMain.handle('provider:get-config', async () => {
 
 ipcMain.handle('provider:save-config', async (_e, config: any) => {
   try {
+    for (const key of Object.keys(config || {})) {
+      if (!/url$/i.test(key)) continue;
+      const value = config[key];
+      if (value === undefined || value === null || value === '') continue;
+      if (typeof value !== 'string' || !isLoopbackUrlWithPort(value)) {
+        return {
+          success: false,
+          error: `Refusing to save "${key}": only http://127.0.0.1, http://localhost or http://[::1] with an explicit port are accepted.`
+        };
+      }
+    }
     fs.mkdirSync(path.dirname(providerConfigPath), { recursive: true });
     fs.writeFileSync(providerConfigPath, JSON.stringify(config, null, 2), 'utf-8');
     agent.setProviderConfig(config);

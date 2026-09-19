@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import { execFile } from 'child_process';
 import { trackChild, killTree } from './children';
 
@@ -37,14 +38,327 @@ const SEARCHABLE_EXT = new Set([
 ]);
 
 export class PathNotAllowedError extends Error {
-  constructor(public readonly attempted: string, public readonly roots: string[]) {
+  constructor(public readonly attempted: string, public readonly roots: string[], reason?: string) {
     super(
       `Path is outside the allowed workspace roots: ${attempted}\n` +
+      (reason ? `Reason: ${reason}\n` : '') +
       `Allowed roots: ${roots.join(', ')}\n` +
       `Refusing the operation. Move the target inside an allowed root, or add the root to DEFAULT_ALLOWED_ROOTS.`
     );
     this.name = 'PathNotAllowedError';
   }
+}
+
+/** True when `candidate` is inside `root` (or is `root` itself). Case-insensitive on
+ * win32, since NTFS paths are case-insensitive but Node's path.relative is not. */
+function isInside(candidate: string, root: string): boolean {
+  const c = process.platform === 'win32' ? candidate.toLowerCase() : candidate;
+  const r = process.platform === 'win32' ? root.toLowerCase() : root;
+  const rel = path.relative(r, c);
+  if (rel === '') return true;
+  if (rel.startsWith('..')) return false;
+  return !path.isAbsolute(rel);
+}
+
+const DRIVE_ABSOLUTE_RE = /^[a-zA-Z]:[\\/]/;
+
+/**
+ * Resolves `target` against `workspaceDir` and confines it to the real
+ * (symlink/junction-resolved) filesystem location, rejecting anything that
+ * lands outside `roots`.
+ *
+ * Threat: an NTFS junction or symlink planted inside the workspace (e.g.
+ * `D:\AntiGravity\strata\vendor -> C:\Users\<user>\AppData`) lets every file
+ * tool that only checked the pre-symlink path string walk straight out of
+ * the workspace while looking allowed. A prior agent product ("Odysseus")
+ * shipped exactly this bug. We resolve to the real path with
+ * fs.realpathSync.native before trusting it.
+ */
+export function confinePath(
+  target: string,
+  roots: string[],
+  workspaceDir: string
+): { ok: true; path: string } | { ok: false; reason: string } {
+  if (!target || !target.trim()) {
+    return { ok: false, reason: 'Empty path.' };
+  }
+
+  // Threat: UNC (\\server\share\...) and \\?\ device-namespace paths address
+  // network shares or raw devices/volumes that bypass the drive-letter roots
+  // entirely, and \\?\ also bypasses normal Win32 path length/normalization
+  // rules. Reject both forms on the raw input before any resolution.
+  if (/^\\\\\?\\/.test(target) || /^\\\\/.test(target) || /^\/\//.test(target)) {
+    return { ok: false, reason: `UNC or \\\\?\\ paths are not allowed: ${target}` };
+  }
+
+  const resolved = path.resolve(
+    path.isAbsolute(target) ? target : path.join(workspaceDir, target)
+  );
+
+  // Defensive re-check: resolution should never produce a UNC path from a
+  // non-UNC input, but don't trust that invariant blindly.
+  if (/^\\\\/.test(resolved) || /^\/\//.test(resolved)) {
+    return { ok: false, reason: `Path resolved to a UNC form: ${resolved}` };
+  }
+
+  // Threat: NTFS alternate data streams ("file.txt:hidden") let a tool read
+  // or write a hidden stream on an otherwise in-bounds file, invisible to
+  // normal directory listings. Any ':' after the drive-letter prefix marks one.
+  if (process.platform === 'win32') {
+    const driveMatch = resolved.match(DRIVE_ABSOLUTE_RE);
+    const afterDrive = driveMatch ? resolved.slice(2) : resolved;
+    if (afterDrive.includes(':')) {
+      return { ok: false, reason: `Alternate data stream paths are not allowed: ${resolved}` };
+    }
+  }
+
+  // Walk up to the deepest existing ancestor, then resolve ITS real path.
+  // fs.realpathSync.native fully resolves every reparse point (symlink or
+  // junction) along that ancestor chain, so a junction planted anywhere
+  // inside the workspace is caught here rather than trusted at face value.
+  let existing = resolved;
+  const tailParts: string[] = [];
+  while (!fs.existsSync(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) break; // reached filesystem root without finding anything
+    tailParts.unshift(path.basename(existing));
+    existing = parent;
+  }
+
+  let realExisting: string;
+  try {
+    realExisting = fs.realpathSync.native(existing);
+  } catch (err: any) {
+    return { ok: false, reason: `Could not resolve real path of ${existing}: ${err.message}` };
+  }
+
+  const realTarget = tailParts.length ? path.join(realExisting, ...tailParts) : realExisting;
+
+  // The real ancestor itself must be inside a root (catches a reparse point
+  // that resolves outside the roots), and so must the real target once the
+  // not-yet-existing tail is appended back on.
+  const insideRoots = roots.some(root => isInside(realExisting, root)) &&
+                       roots.some(root => isInside(realTarget, root));
+  if (!insideRoots) {
+    return {
+      ok: false,
+      reason: `Real path resolves outside the allowed workspace roots (via ${realExisting}): ${target}`
+    };
+  }
+
+  return { ok: true, path: realTarget };
+}
+
+/** Cheap per-directory check used before recursing: rejects a directory
+ * entry whose REAL path (after resolving any symlink/junction) is outside
+ * the allowed roots, without touching every file inside it. */
+function isDirAllowed(dirPath: string, roots: string[]): boolean {
+  try {
+    const real = fs.realpathSync.native(dirPath);
+    return roots.some(root => isInside(real, root));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Conservative ReDoS heuristic for search_codebase's model-supplied regex.
+ * We don't attempt real catastrophic-backtracking analysis - we refuse
+ * patterns whose *shape* is a known trigger: a quantifier applied to a group
+ * that itself contains a quantifier (e.g. `(a+)+`, `(a|aa)*`), or two
+ * unbounded quantifiers back to back (e.g. `a*+`, `.*+`). False positives on
+ * a legitimate-but-unusual pattern are an acceptable cost for not hanging
+ * the main process.
+ */
+function hasNestedQuantifiers(pattern: string): boolean {
+  // Blank out character classes and escaped characters first so "[a-z+*]"
+  // or "\d+" don't confuse the group/quantifier scan below.
+  let stripped = '';
+  let inClass = false;
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === '\\' && i + 1 < pattern.length) { stripped += 'xx'; i++; continue; }
+    if (c === '[') { inClass = true; stripped += '['; continue; }
+    if (c === ']') { inClass = false; stripped += ']'; continue; }
+    stripped += inClass ? 'x' : c;
+  }
+
+  if (/[*+][*+]/.test(stripped)) return true;
+
+  const QUANT_RE = /^(?:[*+]|\{\d*,?\d*\})/;
+  const stack: number[] = [];
+  for (let i = 0; i < stripped.length; i++) {
+    const c = stripped[i];
+    if (c === '(') stack.push(i);
+    else if (c === ')') {
+      const start = stack.pop();
+      if (start === undefined) continue;
+      const body = stripped.slice(start + 1, i);
+      const bodyHasQuantifier = /[*+]|\{\d*,?\d*\}/.test(body);
+      const rest = stripped.slice(i + 1);
+      if (bodyHasQuantifier && QUANT_RE.test(rest)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Static denylist for run_command. THIS IS A BAR, NOT A SANDBOX: PowerShell
+ * has effectively unlimited ways to reach the network, persist, or escape a
+ * workspace, and no regex list can enumerate them all. Its job is to catch
+ * the obvious, common ways a prompt-injected file (a hostile README, code
+ * comment, or commit message the agent read and "helpfully" acted on) would
+ * steer an autonomous run into exfiltrating data, installing persistence, or
+ * damaging the machine - not to make run_command safe against a determined
+ * attacker with full command authorship.
+ *
+ * Exported as a single flat array (each entry named with the threat it
+ * blocks) so a reviewer can read the whole policy in one place.
+ */
+export const RUN_COMMAND_DENYLIST: Array<{ pattern: RegExp; why: string }> = [
+  // --- Outbound network: exfiltration / staged payload download ---
+  { pattern: /\bInvoke-WebRequest\b/i, why: 'outbound HTTP request (Invoke-WebRequest)' },
+  { pattern: /\bi\s*w\s*r\b/i, why: 'outbound HTTP request (iwr alias)' },
+  { pattern: /\bInvoke-RestMethod\b/i, why: 'outbound HTTP request (Invoke-RestMethod)' },
+  { pattern: /\bi\s*r\s*m\b/i, why: 'outbound HTTP request (irm alias)' },
+  { pattern: /\bwget\b/i, why: 'outbound HTTP request (wget)' },
+  { pattern: /\bcurl\b/i, why: 'outbound HTTP request (curl / curl.exe)' },
+  { pattern: /\bStart-BitsTransfer\b/i, why: 'background file transfer (BITS)' },
+  { pattern: /\bNew-Object\b[\s\S]{0,80}\b(WebClient|HttpClient|Net\.Sockets|TcpClient|UdpClient)\b/i, why: 'raw .NET network client construction' },
+  { pattern: /\[System\.Net\./i, why: 'direct System.Net API access' },
+  { pattern: /\bssh\b/i, why: 'remote shell (ssh)' },
+  { pattern: /\bscp\b/i, why: 'remote file copy (scp)' },
+  { pattern: /\bsftp\b/i, why: 'remote file transfer (sftp)' },
+  { pattern: /\bftp\b/i, why: 'remote file transfer (ftp)' },
+  { pattern: /\bSend-MailMessage\b/i, why: 'outbound email' },
+
+  // --- Remote code execution / obfuscation ---
+  { pattern: /\bInvoke-Expression\b/i, why: 'dynamic code execution (Invoke-Expression)' },
+  { pattern: /\bi\s*e\s*x\b/i, why: 'dynamic code execution (iex alias)' },
+  { pattern: /-Enc(?:odedCommand)?\b/i, why: 'base64-encoded PowerShell payload (-EncodedCommand/-enc)' },
+  { pattern: /\bFromBase64String\b/i, why: 'base64-decoded payload construction' },
+  { pattern: /\bDownload(String|Data|File)\b/i, why: 'download-and-execute pattern (WebClient.DownloadString/Data/File)' },
+
+  // --- Reparse-point creation (the escape this same file's confinePath guards against) ---
+  { pattern: /\bmklink\b/i, why: 'reparse point / symlink creation (mklink)' },
+  { pattern: /\bNew-Item\b[\s\S]{0,80}-ItemType\s+["']?(Junction|SymbolicLink|HardLink)/i, why: 'reparse point / symlink creation (New-Item -ItemType Junction/SymbolicLink/HardLink)' },
+
+  // --- Persistence and system policy ---
+  { pattern: /\bschtasks\b/i, why: 'scheduled task creation (persistence)' },
+  { pattern: /\breg(?:\.exe)?\s+add\b/i, why: 'registry write (reg add)' },
+  { pattern: /\breg\.exe\b/i, why: 'registry tool (reg.exe)' },
+  { pattern: /\bSet-ItemProperty\b[\s\S]{0,150}\b(HKLM|HKCU)\b[\s\S]{0,150}\\Run/i, why: 'registry Run-key write (persistence)' },
+  { pattern: /\bsc\.exe\b/i, why: 'service control tool (sc.exe)' },
+  { pattern: /\bNew-Service\b/i, why: 'Windows service creation (persistence)' },
+  { pattern: /\bSet-ExecutionPolicy\b/i, why: 'PowerShell execution policy change' },
+  { pattern: /\bSet-MpPreference\b/i, why: 'Windows Defender policy change' },
+  { pattern: /\bAdd-MpPreference\b/i, why: 'Windows Defender exclusion/policy change' },
+  { pattern: /\bnetsh\b/i, why: 'network/firewall configuration change (netsh)' },
+
+  // --- Destructive scope (volume/system level; per-path recursive deletes are
+  //     checked separately in findDestructiveDeleteViolation, since they need
+  //     the actual target path, not just the verb) ---
+  { pattern: /\bFormat-Volume\b/i, why: 'volume format' },
+  { pattern: /\bdiskpart\b/i, why: 'disk partitioning tool' },
+  { pattern: /\bvssadmin\b/i, why: 'volume shadow copy admin (can delete all restore points)' },
+  { pattern: /\bcipher\b[^\n]{0,20}\/w\b/i, why: 'secure-wipe of free space (cipher /w)' }
+];
+
+/** Splits a command line into quoted-or-bare tokens, for path-argument scanning. */
+function extractTokens(command: string): string[] {
+  const tokens: string[] = [];
+  const TOKEN_RE = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = TOKEN_RE.exec(command)) !== null) {
+    tokens.push(m[1] ?? m[2] ?? m[3] ?? '');
+  }
+  return tokens;
+}
+
+const PATH_TOKEN_RE = /^[A-Za-z]:[\\/]?|^\\\\/;
+
+let toolchainDirsCache: string[] | null = null;
+/** Directories on PATH that contain a node/npm/python executable - the
+ * verification toolchain run_command legitimately needs to reach outside
+ * the workspace roots (e.g. a global npm install location). */
+function getToolchainDirs(): string[] {
+  if (toolchainDirsCache) return toolchainDirsCache;
+  // `any`: Node's process.env type only declares PATH, but Windows itself is
+  // case-insensitive about the variable name and sometimes stores it as "Path".
+  const pathEnv = process.env.PATH || (process.env as any).Path || '';
+  const dirs = pathEnv.split(path.delimiter).filter(Boolean);
+  const names = ['node.exe', 'npm.cmd', 'npm', 'npx.cmd', 'python.exe', 'python3.exe', 'py.exe'];
+  const toolchain: string[] = [];
+  for (const dir of dirs) {
+    try {
+      if (names.some(n => fs.existsSync(path.join(dir, n)))) {
+        toolchain.push(path.resolve(dir));
+      }
+    } catch { /* unreadable PATH entry - ignore */ }
+  }
+  toolchainDirsCache = toolchain;
+  return toolchain;
+}
+
+/** Is this path-shaped token somewhere run_command is allowed to touch? */
+function isPathTokenAllowed(token: string, allowedRoots: string[], workspaceDir: string): boolean {
+  const confined = confinePath(token, allowedRoots, workspaceDir);
+  if (confined.ok) return true;
+  let resolved: string;
+  try { resolved = path.resolve(token); } catch { return false; }
+  if (isInside(resolved, path.resolve(os.tmpdir()))) return true;
+  return getToolchainDirs().some(dir => isInside(resolved, dir));
+}
+
+/**
+ * Threat: Remove-Item/rm/del/rmdir with a recursive flag and a target
+ * outside the workspace can wipe arbitrary directories (e.g. a
+ * prompt-injected repo telling the agent to "clean up" by deleting a home
+ * directory). We look for the recursive-delete verb plus flag anywhere in
+ * the command, then require every path-shaped token in the WHOLE command to
+ * confine into the allowed roots (or the toolchain/temp allowlist) - broader
+ * than strictly necessary, but this is a bar against injection, not a parser.
+ */
+function findDestructiveDeleteViolation(command: string, allowedRoots: string[], workspaceDir: string): string | null {
+  const RECURSIVE_DELETE_RE = /\b(Remove-Item|ri|rm|del|erase|rmdir|rd)\b[\s\S]*?(-Recurse\b|\/s\b)/i;
+  if (!RECURSIVE_DELETE_RE.test(command)) return null;
+  const tokens = extractTokens(command).filter(t => PATH_TOKEN_RE.test(t));
+  for (const t of tokens) {
+    if (!isPathTokenAllowed(t, allowedRoots, workspaceDir)) {
+      return `recursive delete targets a path outside the allowed workspace roots: ${t}`;
+    }
+  }
+  return null;
+}
+
+/** Runs the full run_command safety check; returns a refusal reason, or null if clear. */
+function checkRunCommandSafety(command: string, allowedRoots: string[], workspaceDir: string): string | null {
+  // Threat: whitespace/case tricks (i`wr, iw` r, IwR) are meant to slip past
+  // a naive substring/regex check. Backticks are PowerShell's escape
+  // character and carry no meaning once stripped from plain text; collapsing
+  // repeated whitespace closes the rest. The alias patterns above also
+  // tolerate single inserted spaces via `\s*` between letters.
+  const normalized = command.replace(/`/g, '').replace(/[ \t]{2,}/g, ' ');
+  for (const entry of RUN_COMMAND_DENYLIST) {
+    if (entry.pattern.test(normalized)) {
+      return `matches denylisted pattern (${entry.why})`;
+    }
+  }
+
+  const destructive = findDestructiveDeleteViolation(command, allowedRoots, workspaceDir);
+  if (destructive) return destructive;
+
+  // Threat: any other absolute or drive-relative path token (not just
+  // deletes) can address something outside the roots - e.g. writing a
+  // scheduled script, or reading a credentials file - via ordinary shell
+  // syntax rather than one of our file tools.
+  const tokens = extractTokens(command).filter(t => PATH_TOKEN_RE.test(t));
+  for (const t of tokens) {
+    if (!isPathTokenAllowed(t, allowedRoots, workspaceDir)) {
+      return `references a path outside the allowed workspace roots: ${t}`;
+    }
+  }
+  return null;
 }
 
 export class ToolExecutor {
@@ -72,34 +386,23 @@ export class ToolExecutor {
 
   setWorkspace(dir: string) {
     this.workspaceDir = dir;
-    // A newly opened workspace becomes an allowed root in its own right, so
-    // opening a project outside D:\AntiGravity still works.
-    this.allowedRoots = ToolExecutor.normalizeRoots([...this.allowedRoots, dir]);
-  }
-
-  /** True when `candidate` is inside `root` (or is `root` itself). */
-  private static isInside(candidate: string, root: string): boolean {
-    const rel = path.relative(root, candidate);
-    if (rel === '') return true;
-    if (rel.startsWith('..')) return false;
-    return !path.isAbsolute(rel);
+    // Threat: appending kept every workspace ever opened in this session as
+    // a permanent allowed root, so opening an untrusted repo and later a
+    // sensitive one left the untrusted repo's directory reachable from the
+    // sensitive session forever. Replace the workspace root, don't accumulate.
+    this.allowedRoots = ToolExecutor.normalizeRoots([...DEFAULT_ALLOWED_ROOTS, dir]);
   }
 
   isPathAllowed(targetPath: string): boolean {
-    const resolved = path.resolve(
-      path.isAbsolute(targetPath) ? targetPath : path.join(this.workspaceDir, targetPath)
-    );
-    return this.allowedRoots.some(root => ToolExecutor.isInside(resolved, root));
+    return confinePath(targetPath, this.allowedRoots, this.workspaceDir).ok;
   }
 
   resolvePath(targetPath: string): string {
-    const resolved = path.resolve(
-      path.isAbsolute(targetPath) ? targetPath : path.join(this.workspaceDir, targetPath)
-    );
-    if (!this.allowedRoots.some(root => ToolExecutor.isInside(resolved, root))) {
-      throw new PathNotAllowedError(resolved, this.allowedRoots);
+    const result = confinePath(targetPath, this.allowedRoots, this.workspaceDir);
+    if (!result.ok) {
+      throw new PathNotAllowedError(targetPath, this.allowedRoots, result.reason);
     }
-    return resolved;
+    return result.path;
   }
 
   async readFile(filePath: string, startLine?: number, lineCount?: number): Promise<ToolResult> {
@@ -464,8 +767,13 @@ export class ToolExecutor {
           if (IGNORED_DIRS.has(e.name)) continue;
           const rel = path.relative(this.workspaceDir, path.join(current, e.name));
           if (e.isDirectory()) {
+            const childPath = path.join(current, e.name);
+            // Threat: a junction/symlink dropped inside the workspace would
+            // otherwise be listed and recursed into, walking the listing
+            // outside the allowed roots. Check the entry's real path first.
+            if (!isDirAllowed(childPath, this.allowedRoots)) continue;
             results.push(`[DIR]  ${rel}`);
-            results.push(...scan(path.join(current, e.name), currentDepth + 1));
+            results.push(...scan(childPath, currentDepth + 1));
           } else {
             let size = '';
             try {
@@ -506,6 +814,18 @@ export class ToolExecutor {
   ): Promise<ToolResult> {
     if (!query || !query.trim()) {
       return { success: false, output: 'search_codebase requires a non-empty query.' };
+    }
+    // Threat: a model-supplied regex runs in the main process with no
+    // sandbox or worker isolation; an unbounded query string (or a huge one)
+    // is itself a cheap way to waste the scan budget before any ReDoS check.
+    if (query.length > 256) {
+      return { success: false, output: `search_codebase query is too long (${query.length} chars, max 256). Narrow the pattern.` };
+    }
+    if (hasNestedQuantifiers(query)) {
+      return {
+        success: false,
+        output: `Refused: query "${query}" looks like it can cause catastrophic backtracking (a quantifier applied to a group that itself has a quantifier, e.g. (a+)+, or back-to-back unbounded quantifiers like a*+). That can hang the app on adversarial input. Simplify the pattern.`
+      };
     }
     let root: string;
     try {
@@ -555,6 +875,9 @@ export class ToolExecutor {
         const full = path.join(dir, e.name);
         if (e.isDirectory()) {
           if (IGNORED_DIRS.has(e.name) || e.name.startsWith('.') || /^(backup|agent-leftovers)/i.test(e.name)) continue;
+          // Threat: same junction/symlink escape as list_files - check the
+          // directory's real path once, before descending, not per file.
+          if (!isDirAllowed(full, this.allowedRoots)) continue;
           visit(full, depth + 1);
           continue;
         }
@@ -575,11 +898,20 @@ export class ToolExecutor {
         const lines = content.split('\n');
         let hitInFile = 0;
         for (let i = 0; i < lines.length; i++) {
+          // Threat: the outer per-directory deadline check only runs between
+          // files, so one huge file with a slow-but-not-rejected pattern
+          // could still stall the loop past the deadline. Check periodically
+          // inside the line loop too.
+          if (i > 0 && i % 200 === 0 && Date.now() > deadline) { truncated = true; break; }
+          // Threat: testing the regex against an arbitrarily long line (e.g.
+          // a minified/generated line that slipped past the extension guard)
+          // is itself a backtracking risk independent of the pattern shape.
+          const line = lines[i].length > 4096 ? lines[i].slice(0, 4096) : lines[i];
           re.lastIndex = 0;
-          if (!re.test(lines[i])) continue;
+          if (!re.test(line)) continue;
           if (hitInFile === 0) filesMatched++;
           hitInFile++;
-          results.push(`${rel}:${i + 1}: ${lines[i].trim().slice(0, 180)}`);
+          results.push(`${rel}:${i + 1}: ${line.trim().slice(0, 180)}`);
           if (results.length >= maxResults) { truncated = true; break; }
           if (hitInFile >= 12) { results.push(`${rel}: ... more matches in this file omitted`); break; }
         }
@@ -616,6 +948,14 @@ export class ToolExecutor {
     }
     if (!command || !command.trim()) {
       return { success: false, output: 'run_command requires a non-empty command.' };
+    }
+    // Threat: a prompt-injected repo can steer an autonomous run into
+    // exfiltration, persistence, or escaping the workspace via a shell
+    // command instead of the confined file tools. See RUN_COMMAND_DENYLIST's
+    // comment: this is a bar, not a sandbox.
+    const refusal = checkRunCommandSafety(command, this.allowedRoots, this.workspaceDir);
+    if (refusal) {
+      return { success: false, output: `Refusing to run command: ${refusal}.` };
     }
     const timeout = Math.max(5000, Math.min(Number(timeoutMs) || 60000, 300000));
     return new Promise((resolve) => {
