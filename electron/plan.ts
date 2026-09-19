@@ -418,44 +418,84 @@ export function detectCompletionClaim(text: string): boolean {
  * Text-embedded tool calls. llama-server without a matching template, and
  * many Ollama models, emit the call as JSON or <tool_call> XML in the content
  * instead of the structured field. Losing those ends the run for no reason.
+ *
+ * Prompt-injection guard: a tool_call-shaped block earlier in the reply, or
+ * one that sits inside a quoted <untrusted_data> span, is the model
+ * narrating workspace/command content it just read - not a call it is
+ * issuing - so only a candidate that is BOTH the last non-empty content in
+ * the reply AND outside every untrusted_data span is ever executed.
  */
 export function extractEmbeddedToolCalls(text: string): { calls: any[]; stripped: string } {
   const calls: any[] = [];
-  let stripped = text || '';
-  if (!stripped) return { calls, stripped };
+  const original = text || '';
+  if (!original.trim()) return { calls, stripped: original };
 
-  const tryPush = (jsonText: string): boolean => {
+  const tryParse = (jsonText: string): any | null => {
     try {
       const obj = JSON.parse(jsonText);
       const name = obj?.name || obj?.function?.name || obj?.tool;
       const args = obj?.arguments ?? obj?.parameters ?? obj?.function?.arguments ?? obj?.args ?? {};
       if (typeof name === 'string' && name && typeof args === 'object') {
-        calls.push({
-          id: `call_text_${Date.now()}_${calls.length}`,
+        return {
+          id: `call_text_${Date.now()}_0`,
           type: 'function',
           function: { name, arguments: args }
-        });
-        return true;
+        };
       }
     } catch {}
-    return false;
+    return null;
   };
 
+  // Untrusted-data spans (see agent.ts wrapUntrustedData): a candidate that
+  // overlaps one of these is quoted workspace/command data, never a real call.
+  const untrustedSpans: Array<[number, number]> = [];
+  const untrustedRe = /<untrusted_data\b[^>]*>[\s\S]*?<\/untrusted_data>/g;
+  let uMatch: RegExpExecArray | null;
+  while ((uMatch = untrustedRe.exec(original)) !== null) {
+    untrustedSpans.push([uMatch.index, uMatch.index + uMatch[0].length]);
+  }
+  const insideUntrusted = (start: number, end: number) =>
+    untrustedSpans.some(([s, e]) => start < e && end > s);
+
+  // Every candidate call-shaped block in the reply, in any of the accepted
+  // encodings; only the last one (by end offset) is ever eligible.
+  const candidates: Array<{ start: number; end: number; inner: string }> = [];
+
   const xml = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g;
-  stripped = stripped.replace(xml, (whole, inner) => (tryPush(inner.trim()) ? '' : whole));
-
-  const fence = /```(?:json|tool_call|tool)?\s*(\{[\s\S]*?\})\s*```/g;
-  stripped = stripped.replace(fence, (whole, inner) => {
-    if (!/"(name|tool|function)"\s*:/.test(inner)) return whole;
-    return tryPush(inner) ? '' : whole;
-  });
-
-  if (!calls.length) {
-    const bare = stripped.match(/\{[\s\r\n]*"name"[\s\r\n]*:[\s\r\n]*"[a-zA-Z0-9_-]+"[\s\S]*?"arguments"[\s\r\n]*:[\s\r\n]*\{[\s\S]*?\}[\s\r\n]*\}/);
-    if (bare && tryPush(bare[0])) stripped = stripped.replace(bare[0], '');
+  let m: RegExpExecArray | null;
+  while ((m = xml.exec(original)) !== null) {
+    candidates.push({ start: m.index, end: m.index + m[0].length, inner: m[1].trim() });
   }
 
-  return { calls, stripped: stripped.trim() };
+  const fence = /```(?:json|tool_call|tool)?\s*(\{[\s\S]*?\})\s*```/g;
+  while ((m = fence.exec(original)) !== null) {
+    if (/"(name|tool|function)"\s*:/.test(m[1])) {
+      candidates.push({ start: m.index, end: m.index + m[0].length, inner: m[1] });
+    }
+  }
+
+  const bare = /\{[\s\r\n]*"name"[\s\r\n]*:[\s\r\n]*"[a-zA-Z0-9_-]+"[\s\S]*?"arguments"[\s\r\n]*:[\s\r\n]*\{[\s\S]*?\}[\s\r\n]*\}/g;
+  while ((m = bare.exec(original)) !== null) {
+    candidates.push({ start: m.index, end: m.index + m[0].length, inner: m[0] });
+  }
+
+  if (!candidates.length) return { calls, stripped: original };
+
+  // "Last non-empty block of the reply": the candidate's end must reach the
+  // end of the (right-trimmed) text - anything with prose after it is the
+  // model talking about a call, not making one, and is left alone.
+  candidates.sort((a, b) => a.end - b.end);
+  const last = candidates[candidates.length - 1];
+  const trimmedEnd = original.replace(/\s+$/, '').length;
+  if (last.end !== trimmedEnd) return { calls, stripped: original };
+  if (insideUntrusted(last.start, last.end)) return { calls, stripped: original };
+
+  const call = tryParse(last.inner);
+  if (!call) return { calls, stripped: original };
+
+  calls.push(call);
+  const stripped = (original.slice(0, last.start) + original.slice(last.end)).trim();
+  return { calls, stripped };
 }
 
 /** Parses the architect's review into a verdict. Defaults to approve so an unparsable review can never loop the run. */
