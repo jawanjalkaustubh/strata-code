@@ -559,7 +559,7 @@ const TitleBarInner: React.FC<TitleBarProps> = ({
                   ? 'bg-gradient-to-r from-role-architect-600 to-role-user-600 text-white shadow-sm shadow-role-architect-600/30 font-bold'
                   : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
               }`}
-              title="Dual-Brain Mode: General Architect (qwen3.8:27b) plans blueprints, Specialist Coder (Qwen3-Coder-30B) executes tools autonomously on RTX 5090"
+              title="Dual-Brain Mode: General Architect (qwen3.8:27b) plans blueprints, Specialist Coder (Qwen3-Coder-30B) executes tools autonomously on the local GPU"
             >
               <Cpu size={12} className={isHybrid ? 'text-role-tool-300' : 'text-slate-400'} />
               <span>Dual-Brain</span>
@@ -571,7 +571,7 @@ const TitleBarInner: React.FC<TitleBarProps> = ({
                   ? 'bg-state-ok-600 text-white shadow-sm shadow-state-ok-600/30 font-bold'
                   : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
               }`}
-              title="Direct Mode: 100% sovereign direct chat with single local model on your RTX 5090 GPU"
+              title="Direct Mode: 100% sovereign direct chat with single local model on your local GPU"
             >
               <HardDrive size={12} className={!isHybrid ? 'text-white' : 'text-slate-400'} />
               <span>Direct</span>
@@ -582,7 +582,7 @@ const TitleBarInner: React.FC<TitleBarProps> = ({
           {isHybrid && (
             <div 
               className="flex items-center p-0.5 bg-studio-panel/90 rounded-card border border-role-architect-500/30 text-micro flex-shrink-0 select-none shadow-sm animate-in fade-in duration-200"
-              title="Dual-Brain Planning Intensity: Governs architectural reasoning depth on your RTX 5090"
+              title="Dual-Brain Planning Intensity: Governs architectural reasoning depth on your local GPU"
             >
               <button
                 onClick={() => onSelectHybridTier?.('low')}
@@ -624,7 +624,7 @@ const TitleBarInner: React.FC<TitleBarProps> = ({
           <div 
             className="flex items-center space-x-1.5 bg-studio-panel px-2 py-1 rounded-control border border-studio-border text-xs flex-shrink-0"
             title={isHybrid 
-              ? `Local Coder Worker (${taskMode === 'coding' ? 'Coding' : 'General'}): Runs autonomously on your RTX 5090 GPU to write code and execute tools at 237 tok/s`
+              ? `Local Coder Worker (${taskMode === 'coding' ? 'Coding' : 'General'}): Runs autonomously on your local GPU to write code and execute tools at 237 tok/s`
               : `Offline Local Model (${taskMode === 'coding' ? 'Coding' : 'General'}): 100% sovereign on your local GPU with $0 cost`}
           >
             <HardDrive size={13} className={isHybrid ? "text-role-architect-400" : "text-state-ok-400"} />

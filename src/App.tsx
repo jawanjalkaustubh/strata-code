@@ -135,7 +135,7 @@ export const App: React.FC = () => {
   const [chatPanelWidth, setChatPanelWidth] = useState<number>(460);
   const [isDragging, setIsDragging] = useState<'fileTree' | 'chatPanel' | null>(null);
 
-  // 100% Fully Local Sovereign AI Studio on NVIDIA RTX 5090
+  // 100% Fully Local Sovereign AI Studio on your local GPU
   const [isHybrid, setIsHybrid] = useState<boolean>(() => {
     const saved = localStorage.getItem('strata_hybrid_mode');
     return saved !== null ? saved === 'true' : false;
@@ -989,7 +989,7 @@ export const App: React.FC = () => {
 
       <StatusBar workspace={workspace} />
 
-      {/* Integrated Interactive Terminal / PowerShell Console Drawer */}
+      {/* Integrated Interactive Terminal (PowerShell on Windows, zsh/bash on macOS) Drawer */}
       <TerminalDrawer
         isOpen={isTerminalOpen}
         onClose={closeTerminal}

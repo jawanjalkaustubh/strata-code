@@ -16,7 +16,7 @@ that plans and reviews. Nothing leaves your machine. No accounts, no keys.
 | Disk | 30 GB where you extract + 20 GB on your user drive | SSD |
 | Network | ~45 GB of downloads, once | |
 
-Not supported: AMD/Intel GPUs, macOS, Linux (this build only).
+Not supported by this build: AMD/Intel GPUs, Linux. macOS (Apple Silicon) is a source install: see `MACOS.md` in the repository.
 
 ## Agreement
 

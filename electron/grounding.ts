@@ -209,7 +209,7 @@ export function chooseVerifyCommands(profile: ProjectProfile, changedFiles: stri
   if (js.length && !(profile.kind === 'node' && profile.typescript && ts.length === 0 && cmds.length)) {
     for (const f of js) cmds.push(`node --check ${q(f)}`);
   }
-  if (py.length) cmds.push(`python -m py_compile ${py.map(q).join(' ')}`);
+  if (py.length) cmds.push(`${process.platform === 'win32' ? 'python' : 'python3'} -m py_compile ${py.map(q).join(' ')}`);
   for (const f of json) {
     cmds.push(`node -e "JSON.parse(require('fs').readFileSync(${JSON.stringify(f)},'utf8'))"`);
   }

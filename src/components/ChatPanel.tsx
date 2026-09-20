@@ -193,7 +193,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     {
       cmd: '/hybrid',
       label: '/hybrid',
-      desc: 'Toggle Local Dual-Brain Mode (Architect + Coder Worker on RTX 5090)',
+      desc: 'Toggle Local Dual-Brain Mode (Architect + Coder Worker on your local GPU)',
       action: () => onToggleHybrid?.()
     }
   ], [openModelConfig, onNewChat, onToggleHybrid]);
@@ -647,7 +647,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             <span className="text-role-worker-400 font-bold text-xs flex-shrink-0">➔</span>
 
             {/* Coder Worker Model */}
-            <div className="flex items-center space-x-1 px-2 py-0.5 rounded-full bg-state-ok-500/20 border border-state-ok-500/40 text-state-ok-200 font-mono text-micro flex-shrink-0" title="Local Sovereign Worker on NVIDIA RTX 5090">
+            <div className="flex items-center space-x-1 px-2 py-0.5 rounded-full bg-state-ok-500/20 border border-state-ok-500/40 text-state-ok-200 font-mono text-micro flex-shrink-0" title="Local Sovereign Worker on your local GPU">
               <span className="w-1.5 h-1.5 rounded-full bg-state-ok-400" />
               <span>Coder Worker: <strong className="text-white">{activeModel || 'Qwen3-Coder-30B'}</strong> (237 tok/s)</span>
             </div>
@@ -663,7 +663,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         <div className="px-2.5 py-1 bg-studio-panel/50 border-b border-studio-border flex items-center justify-between text-micro select-none flex-shrink-0">
           <div className="flex items-center space-x-2 text-slate-400 font-mono text-micro">
             <HardDrive size={11} className="text-state-ok-400" />
-            <span>Pure Local Mode (RTX 5090 • {activeModel})</span>
+            <span>Pure Local Mode (Local GPU • {activeModel})</span>
           </div>
           {onToggleHybrid && (
             <button
@@ -805,7 +805,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         <Zap size={11} className="text-state-ok-300" />
                       </div>
                       <span className="text-state-ok-300 font-bold font-mono">
-                        {msg.senderName || 'Local Coder Worker (Brain 2 • RTX 5090)'}
+                        {msg.senderName || 'Local Coder Worker (Brain 2 • Local GPU)'}
                       </span>
                       {msg.addressedTo && (
                         <span className="text-micro px-1.5 py-0.5 rounded-control bg-state-ok-500/20 text-state-ok-200 border border-state-ok-500/30 font-sans">
@@ -1049,10 +1049,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
             <div className="flex items-center space-x-2 font-mono text-micro text-slate-400 truncate">
               {isHybrid ? (
-                /* Local Dual-Brain Mode: Architect + Coder on RTX 5090 (Pure Local, 0 Cloud Tokens) */
+                /* Local Dual-Brain Mode: Architect + Coder on the local GPU (Pure Local, 0 Cloud Tokens) */
                 <div 
                   className="flex items-center space-x-1.5 px-2 py-0.5 rounded bg-role-architect-950/40 border border-role-architect-500/30 text-micro font-mono shadow-sm select-none"
-                  title="Local Dual-Brain Architecture: Brain 1 (General Architect) + Brain 2 (Coder Worker) on RTX 5090 ($0.00 Cost)"
+                  title="Local Dual-Brain Architecture: Brain 1 (General Architect) + Brain 2 (Coder Worker) on the local GPU ($0.00 Cost)"
                 >
                   <span className="px-1.5 py-0.5 rounded bg-role-architect-500/25 text-role-architect-300 font-bold uppercase text-micro border border-role-architect-500/40 tracking-wider">
                     DUAL-BRAIN • {hybridTier}
@@ -1068,11 +1068,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 /* Local Single Mode: ONLY Local Tokens */
                 <div 
                   className="flex items-center space-x-1.5 px-2 py-0.5 rounded bg-state-ok-950/40 border border-state-ok-500/30 text-state-ok-300 text-micro font-mono shadow-sm select-none"
-                  title="Pure Local Sovereign Mode: 100% GPU Execution on RTX 5090 (Zero Cloud Tokens)"
+                  title="Pure Local Sovereign Mode: 100% local GPU execution (Zero Cloud Tokens)"
                 >
                   <HardDrive size={10} className="text-state-ok-400" />
                   <span className="font-medium">⚡ Local Tokens: {localTokensTotal.toLocaleString()} tok</span>
-                  <span className="text-state-ok-400/60 font-semibold">(RTX 5090)</span>
+                  <span className="text-state-ok-400/60 font-semibold">(Local GPU)</span>
                 </div>
               )}
 
@@ -1135,7 +1135,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-state-ok-500"></span>
                       </span>
                       <HardDrive size={13} className="text-state-ok-400 flex-shrink-0" />
-                      <span className="truncate">RTX 5090 Coder ({collaborateStep.workerModel || activeModel})</span>
+                      <span className="truncate">Local Coder ({collaborateStep.workerModel || activeModel})</span>
                     </div>
                   )}
 
@@ -1147,7 +1147,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
                 {/* Real-Time Local Execution Metrics */}
                 <div className="flex items-center space-x-1.5 font-mono text-micro flex-shrink-0 ml-auto">
-                  <span className="px-2 py-0.5 rounded bg-state-ok-900/40 text-state-ok-300 border border-state-ok-500/30 font-medium" title="Local Tokens Executed on RTX 5090">
+                  <span className="px-2 py-0.5 rounded bg-state-ok-900/40 text-state-ok-300 border border-state-ok-500/30 font-medium" title="Local tokens executed on your GPU">
                     ⚡ Local: {collaborateStep.localTokens.toLocaleString()} tok (100% GPU)
                   </span>
                   <span className="px-2 py-0.5 rounded bg-role-architect-500/15 text-role-architect-300 border border-role-architect-500/30 font-bold" title="100% Sovereign Offline Execution">

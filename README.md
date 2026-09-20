@@ -15,7 +15,11 @@
 
 ---
 
-## 🚀 Quick Launch & 1-Click Setup
+## 🍎 macOS (Apple Silicon)
+
+See **[MACOS.md](MACOS.md)**: `scripts/mac/setup.sh` installs Ollama and llama.cpp with Homebrew, downloads the models sized for your unified memory, and builds the app; `run-strata-code.command` launches it.
+
+## 🚀 Quick Launch & 1-Click Setup (Windows)
 
 ### For New Users / Extracted ZIP:
 1. Double-click **`Setup-Strata.bat`**.

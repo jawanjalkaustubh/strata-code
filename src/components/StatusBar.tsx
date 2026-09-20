@@ -14,7 +14,7 @@ export interface EngineStatus {
   /** True when this app instance spawned the coder server and will stop it on quit. */
   coderManaged?: boolean;
   coderLog?: string;
-  gpu?: { totalMiB: number; usedMiB: number; freeMiB: number };
+  gpu?: { totalMiB: number; usedMiB: number; freeMiB: number; unified?: boolean };
 }
 
 const MIB_PER_GIB = 1024;
@@ -200,7 +200,7 @@ const StatusBarInner: React.FC<{ workspace?: string }> = ({ workspace }) => {
 
       {/* --- VRAM --- */}
       {vram ? (
-        <div className="flex items-center gap-2 min-w-0" title={`${vram.freeGiB.toFixed(1)} GiB free of ${vram.totalGiB.toFixed(1)} GiB`}>
+        <div className="flex items-center gap-2 min-w-0" title={`${vram.freeGiB.toFixed(1)} GiB free of ${vram.totalGiB.toFixed(1)} GiB${status?.gpu?.unified ? ' unified memory (shared by the GPU and every app on this Mac)' : ' VRAM'}`}>
           <Zap size={11} className={textTone[vram.tone]} />
           <div className="w-24 h-1.5 rounded-full bg-studio-bg overflow-hidden shrink-0">
             <div
@@ -209,7 +209,7 @@ const StatusBarInner: React.FC<{ workspace?: string }> = ({ workspace }) => {
             />
           </div>
           <span className="text-studio-text shrink-0">
-            {vram.usedGiB.toFixed(1)}/{vram.totalGiB.toFixed(1)} GiB
+            {vram.usedGiB.toFixed(1)}/{vram.totalGiB.toFixed(1)} GiB{status?.gpu?.unified ? ' unified' : ''}
           </span>
           <span className={`${textTone[vram.tone]} shrink-0`}>
             {vram.freeGiB.toFixed(1)} free

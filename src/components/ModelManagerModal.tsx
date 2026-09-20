@@ -170,7 +170,7 @@ export const ModelManagerModal: React.FC<ModelManagerModalProps> = ({
                 </span>
               </h3>
               <p className="text-micro text-slate-400">
-                Manage offline Ollama & llama-server models on your RTX 5090 GPU (100% Offline, $0.00 Cost)
+                Manage offline Ollama & llama-server models on your local GPU (100% Offline, $0.00 Cost)
               </p>
             </div>
           </div>
@@ -597,7 +597,7 @@ export const ModelManagerModal: React.FC<ModelManagerModalProps> = ({
                             {/* Delete Button or Port 8080 Badge */}
                             {model.name.includes('Qwen3-Coder') || model.digest === 'local-gguf-port-8080' ? (
                               <span className="text-micro font-mono px-2 py-0.5 rounded bg-role-tool-500/15 text-role-tool-300 border border-role-tool-500/30 font-bold">
-                                Port 8080 (RTX 5090)
+                                Port 8080 (llama-server)
                               </span>
                             ) : isConfirmingDelete ? (
                               <div className="flex items-center space-x-1 bg-state-danger-950/40 p-1 rounded-card border border-state-danger-500/40 animate-in fade-in">

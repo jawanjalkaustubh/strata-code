@@ -115,7 +115,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({
               {isHybrid ? (
                 <span className="text-role-architect-300 font-semibold flex items-center space-x-1">
                   <Cpu size={12} className="text-role-architect-400" />
-                  <span>Local Dual-Brain ({(hybridTier || 'medium').toUpperCase()}: RTX 5090)</span>
+                  <span>Local Dual-Brain ({(hybridTier || 'medium').toUpperCase()}: {systemInfo?.gpu || 'Local GPU'})</span>
                 </span>
               ) : (
                 <span className="text-state-ok-400 font-semibold">100% Offline / Local</span>
@@ -142,7 +142,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({
           {/* Footer */}
           <div className="pt-2 text-center text-micro text-slate-400">
             {isHybrid
-              ? 'Powered by 100% Local Dual-Brain Architecture (Ollama & llama-server) on NVIDIA RTX 5090.'
+              ? 'Powered by 100% Local Dual-Brain Architecture (Ollama & llama-server) on your local GPU.'
               : 'Powered by 100% offline local GPU inference & Monaco Editor engine.'}
           </div>
         </div>

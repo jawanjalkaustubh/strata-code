@@ -10,6 +10,7 @@ import {
 } from './plan';
 import { WebContents } from 'electron';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { execFile, spawn } from 'child_process';
 import { liveSessionPath, coderModelPath as resolveCoderModelPath } from './paths';
@@ -139,7 +140,7 @@ export interface LocalEngineStatus {
   coderBlockedBy?: string;
   /** Live sibling Strata apps found via their presence files. */
   siblings?: { app: string; pid: number; models: string[] }[];
-  gpu?: { totalMiB: number; usedMiB: number; freeMiB: number };
+  gpu?: { totalMiB: number; usedMiB: number; freeMiB: number; unified?: boolean };
 }
 
 export interface EditorContext {
@@ -543,8 +544,8 @@ export class AgentEngine {
   private static readonly ENGINE_PROBE_TTL_MS = 10000;
   private static readonly ENGINE_PROBE_IDLE_TTL_MS = 30000;
   private engineStatus: LocalEngineStatus | null = null;
-  /** Last nvidia-smi reading, reused while nothing is resident so no probe spawns on a timer at idle. */
-  private lastGpuReading: { totalMiB: number; usedMiB: number; freeMiB: number } | undefined;
+  /** Last nvidia-smi / vm_stat reading, reused while nothing is resident so no probe spawns on a timer at idle. */
+  private lastGpuReading: { totalMiB: number; usedMiB: number; freeMiB: number; unified?: boolean } | undefined;
   private engineProbeInFlight: Promise<LocalEngineStatus> | null = null;
   private ollamaSizeCache: Map<string, number> | null = null;
   private serverAliasLower: string | null = null;
@@ -572,7 +573,16 @@ export class AgentEngine {
     }
   }
 
-  private readGpuMemory(): Promise<{ totalMiB: number; usedMiB: number; freeMiB: number } | undefined> {
+  /**
+   * GPU memory for the VRAM arbiter. nvidia-smi where there is an NVIDIA card;
+   * on Apple Silicon the GPU shares unified memory with everything else, so the
+   * reading is the machine's total RAM and what is currently available
+   * (`vm_stat`: free + inactive + speculative pages). The arbiter's question -
+   * "does the coder still fit next to what Ollama holds?" - has the same
+   * answer either way; `unified` lets the UI label it honestly.
+   */
+  private readGpuMemory(): Promise<{ totalMiB: number; usedMiB: number; freeMiB: number; unified?: boolean } | undefined> {
+    if (process.platform === 'darwin') return this.readUnifiedMemoryDarwin();
     return new Promise((resolve) => {
       try {
         execFile(
@@ -580,7 +590,10 @@ export class AgentEngine {
           ['--query-gpu=memory.total,memory.used,memory.free', '--format=csv,noheader,nounits'],
           { timeout: 2000, windowsHide: true },
           (err: any, stdout: any) => {
-            if (err || !stdout) return resolve(undefined);
+            if (err || !stdout) {
+              if (process.platform === 'linux') return resolve(this.readMemInfoLinux());
+              return resolve(undefined);
+            }
             // First line = first GPU.
             const parts = String(stdout).trim().split('\n')[0].split(',').map(v => parseInt(v.trim(), 10));
             if (parts.length < 3 || parts.some(v => !Number.isFinite(v))) return resolve(undefined);
@@ -591,6 +604,39 @@ export class AgentEngine {
         resolve(undefined);
       }
     });
+  }
+
+  private readUnifiedMemoryDarwin(): Promise<{ totalMiB: number; usedMiB: number; freeMiB: number; unified: boolean } | undefined> {
+    const totalMiB = Math.round(os.totalmem() / (1024 * 1024));
+    return new Promise((resolve) => {
+      try {
+        execFile('vm_stat', [], { timeout: 2000 }, (err: any, stdout: any) => {
+          if (err || !stdout) return resolve({ totalMiB, usedMiB: totalMiB - Math.round(os.freemem() / 1048576), freeMiB: Math.round(os.freemem() / 1048576), unified: true });
+          const text = String(stdout);
+          const pageSize = parseInt((text.match(/page size of (\d+) bytes/) || [])[1] || '16384', 10);
+          const pages = (label: string) => parseInt((text.match(new RegExp(`${label}:\\s+(\\d+)`)) || [])[1] || '0', 10);
+          const availPages = pages('Pages free') + pages('Pages inactive') + pages('Pages speculative');
+          const freeMiB = Math.min(totalMiB, Math.round(availPages * pageSize / (1024 * 1024)));
+          resolve({ totalMiB, usedMiB: totalMiB - freeMiB, freeMiB, unified: true });
+        });
+      } catch {
+        resolve(undefined);
+      }
+    });
+  }
+
+  /** Linux without an NVIDIA card (CPU / integrated / ROCm): MemAvailable from /proc/meminfo, labelled unified. */
+  private readMemInfoLinux(): { totalMiB: number; usedMiB: number; freeMiB: number; unified: boolean } | undefined {
+    try {
+      const text = fs.readFileSync('/proc/meminfo', 'utf-8');
+      const kb = (label: string) => parseInt((text.match(new RegExp(`${label}:\\s+(\\d+)`)) || [])[1] || '0', 10);
+      const totalMiB = Math.round(kb('MemTotal') / 1024);
+      const freeMiB = Math.round(kb('MemAvailable') / 1024);
+      if (!totalMiB) return undefined;
+      return { totalMiB, usedMiB: totalMiB - freeMiB, freeMiB, unified: true };
+    } catch {
+      return undefined;
+    }
   }
 
   /** Snapshot of both local engines. Cached briefly so a tool-heavy turn does not re-probe per call. */
@@ -759,8 +805,20 @@ export class AgentEngine {
    * excluded by the command-line filter.
    */
   findCoderServerPids(): Promise<number[]> {
-    if (process.platform !== 'win32') return Promise.resolve([]);
     const port = this.coderServerPort();
+    if (process.platform !== 'win32') {
+      // pgrep -f matches the full command line; anchored on the binary name and the port.
+      return new Promise((resolve) => {
+        try {
+          execFile('pgrep', ['-f', `llama-server.*--port[ =]${port}(\\s|$)`], { timeout: 3000 }, (err: any, stdout: any) => {
+            if (err) return resolve([]);
+            resolve(String(stdout || '').split(/\s+/).map(v => parseInt(v, 10)).filter(v => Number.isFinite(v) && v > 0 && v !== process.pid));
+          });
+        } catch {
+          resolve([]);
+        }
+      });
+    }
     const script = `Get-CimInstance Win32_Process -Filter "Name='llama-server.exe'" | ForEach-Object { "$($_.ProcessId)|$($_.CommandLine)" }`;
     return new Promise((resolve) => {
       try {

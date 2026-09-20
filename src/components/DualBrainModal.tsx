@@ -98,7 +98,7 @@ export const DualBrainModal: React.FC<DualBrainModalProps> = ({
                   Local Dual-Brain Architecture
                 </h3>
                 <span className="text-micro font-mono px-2 py-0.5 rounded-full bg-state-ok-500/15 text-state-ok-300 border border-state-ok-500/30 font-semibold">
-                  100% OFFLINE • RTX 5090
+                  100% OFFLINE • LOCAL GPU
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
@@ -135,7 +135,7 @@ export const DualBrainModal: React.FC<DualBrainModalProps> = ({
             <div>
               <strong className="text-state-ok-300 font-bold block text-xs">Brain 2: Specialist Coder Worker</strong>
               <p className="text-micro text-slate-300 leading-snug mt-0.5">
-                High-speed autonomous tool execution (reads, exact edits, writes, bash commands) at 237 tokens/sec on RTX 5090.
+                High-speed autonomous tool execution (reads, exact edits, writes, bash commands) (237 tokens/sec on the reference RTX 5090; Apple Silicon runs the same MoE model well).
               </p>
               <div className="mt-1.5 flex items-center space-x-1.5 text-micro font-mono text-state-ok-400">
                 <span className="w-1.5 h-1.5 rounded-full bg-state-ok-400" />

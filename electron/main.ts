@@ -7,7 +7,8 @@ import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
 import { AgentEngine, OLLAMA_NUM_CTX, OLLAMA_KEEP_ALIVE } from './agent';
 import {
-  coderServerExe, coderServerArgs, coderModelPath, coderConfig, defaultWorkspace, rememberWorkspace, runtimeDir, modelsDir, installRoot
+  coderServerExe, coderServerArgs, coderModelPath, coderConfig, defaultWorkspace, rememberWorkspace, runtimeDir, modelsDir, installRoot,
+  ensureUnixPath, whichSync, CODER_SERVER_BINARY, IS_WIN, IS_MAC
 } from './paths';
 import { deletePresence } from './presence';
 import { trackChild, killTree, killTrackedChildren } from './children';
@@ -16,6 +17,10 @@ const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// macOS/Linux: a Finder/Dock launch has no Homebrew or nvm on PATH; merge the
+// login shell's PATH before anything spawns ollama, llama-server or npm.
+ensureUnixPath();
 
 // Dynamic Hardware Detection Layer (Generalizes to any GPU / CPU / RAM)
 //
@@ -72,7 +77,26 @@ async function detectHardwareInfo(): Promise<HardwareInfo> {
       if (Number.isFinite(total)) info.vram = `${Math.round(total / 1024)}GB VRAM`;
     }
 
-    // 2. Fallback to Windows CIM/WMI
+    // 2. Apple Silicon: the chip is the GPU and the "VRAM" is unified memory.
+    if (!found && IS_MAC) {
+      const sp = await runProbe('system_profiler', ['SPDisplaysDataType', '-json'], 5000);
+      try {
+        const gpus = JSON.parse(sp)?.SPDisplaysDataType;
+        const g = Array.isArray(gpus) ? gpus[0] : null;
+        if (g?.sppci_model) {
+          const cores = g.sppci_cores ? ` (${g.sppci_cores}-core GPU)` : '';
+          info.gpu = `${g.sppci_model}${cores}`;
+          found = true;
+        }
+      } catch {}
+      if (!found) {
+        const brand = (await runProbe('sysctl', ['-n', 'machdep.cpu.brand_string'], 2000)).trim();
+        if (brand) { info.gpu = brand; found = true; }
+      }
+      info.vram = `${Math.round(os.totalmem() / (1024 * 1024 * 1024))}GB unified`;
+    }
+
+    // 3. Fallback to Windows CIM/WMI
     if (!found && process.platform === 'win32') {
       const ps = await runProbe('powershell', ['-NoProfile', '-Command', 'Get-CimInstance Win32_VideoController | Select-Object Name | ConvertTo-Json'], 4000);
       try {
@@ -103,11 +127,20 @@ class OllamaProcessManager {
       return this.cachedBinaryPath;
     }
 
-    const candidatePaths = [
-      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Ollama', 'ollama.exe'),
-      'C:\\Program Files\\Ollama\\ollama.exe',
-      path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'Ollama', 'ollama.exe')
-    ];
+    const candidatePaths = IS_WIN
+      ? [
+          path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Ollama', 'ollama.exe'),
+          'C:\\Program Files\\Ollama\\ollama.exe',
+          path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'Ollama', 'ollama.exe')
+        ]
+      : [
+          // Homebrew (arm64 / intel), the Ollama.app bundle, a manual install.
+          '/opt/homebrew/bin/ollama',
+          '/usr/local/bin/ollama',
+          '/Applications/Ollama.app/Contents/Resources/ollama',
+          path.join(os.homedir(), 'Applications', 'Ollama.app', 'Contents', 'Resources', 'ollama'),
+          path.join(os.homedir(), '.local', 'bin', 'ollama')
+        ];
 
     for (const p of candidatePaths) {
       if (fs.existsSync(p)) {
@@ -116,15 +149,23 @@ class OllamaProcessManager {
       }
     }
 
-    // Try finding via where.exe on Windows
-    try {
-      const out = execSync('where.exe ollama', { encoding: 'utf-8', timeout: 2000 });
-      const firstLine = out.trim().split(/\r?\n/)[0];
-      if (firstLine && fs.existsSync(firstLine)) {
-        this.cachedBinaryPath = firstLine;
-        return firstLine;
+    // PATH lookup: where.exe on Windows, which elsewhere (after ensureUnixPath).
+    if (IS_WIN) {
+      try {
+        const out = execSync('where.exe ollama', { encoding: 'utf-8', timeout: 2000 });
+        const firstLine = out.trim().split(/\r?\n/)[0];
+        if (firstLine && fs.existsSync(firstLine)) {
+          this.cachedBinaryPath = firstLine;
+          return firstLine;
+        }
+      } catch {}
+    } else {
+      const found = whichSync('ollama');
+      if (found) {
+        this.cachedBinaryPath = found;
+        return found;
       }
-    } catch {}
+    }
 
     return null;
   }
@@ -301,8 +342,11 @@ function createWindow() {
     minHeight: 650,
     center: true,
     frame: false,
+    // macOS keeps the frameless window's traffic lights; the custom title bar leaves them room.
+    ...(IS_MAC ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 12, y: 12 } } : {}),
     title: 'Strata Code',
-    icon: path.join(__dirname, '../assets/strata-code-sc.ico'),
+    // .ico is Windows-only; macOS takes the PNG here in dev (the .app bundle's icns when packaged).
+    icon: path.join(__dirname, IS_WIN ? '../assets/strata-code-sc.ico' : '../assets/strata-256.png'),
     show: true,
     backgroundColor: '#0c0e14',
     webPreferences: {
@@ -519,14 +563,16 @@ async function startCoderServer(reason: string): Promise<boolean> {
   if (quitting) return false;
   const exe = coderServerExe();
   if (!exe) {
-    const detail = `llama-server.exe not found (runtime dir: ${runtimeDir() || 'none'}). Run the installer, or set STRATA_RUNTIME_DIR.`;
+    const detail = IS_WIN
+      ? `llama-server.exe not found (runtime dir: ${runtimeDir() || 'none'}). Run the installer, or set STRATA_RUNTIME_DIR.`
+      : `${CODER_SERVER_BINARY} not found (runtime dir: ${runtimeDir() || 'none'}). Run scripts/mac/setup.sh (brew install llama.cpp), or set STRATA_RUNTIME_DIR.`;
     console.log(`[Coder Server] ${detail}`);
     emitCoderEvent('error', detail);
     return false;
   }
   const model = coderModelPath();
   if (!model) {
-    const detail = `No GGUF model found (models dir: ${modelsDir() || 'none'}). Run the installer to download one.`;
+    const detail = `No GGUF model found (models dir: ${modelsDir() || 'none'}). Run ${IS_WIN ? 'the installer' : 'scripts/mac/setup.sh'} to download one.`;
     console.log(`[Coder Server] ${detail}`);
     emitCoderEvent('error', detail);
     return false;
@@ -889,7 +935,7 @@ ipcMain.handle('ollama:get-model-details', async () => {
         modified_at: stats.mtime.toISOString(),
         digest: 'local-gguf-port-8080',
         details: {
-          parent_model: 'llama-server (Port 8080 • RTX 5090)',
+          parent_model: `llama-server (Port 8080 • ${getSystemHardwareInfo().gpu})`,
           format: 'gguf',
           family: 'qwen3-coder',
           families: ['qwen3-coder', 'moe'],
@@ -1250,7 +1296,8 @@ ipcMain.handle('terminal:run-command', async (_e, command: string) => {
       const prefix = '$OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ';
       child = execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', prefix + command], opts, done);
     } else {
-      child = exec(command, { ...opts, shell: '/bin/bash' }, done);
+      // The user's login shell (zsh on macOS) so aliases and PATH match Terminal; bash if unset.
+      child = exec(command, { ...opts, shell: process.env.SHELL || '/bin/bash' }, done);
     }
     trackChild(child, 'terminal');
     timer = setTimeout(() => {

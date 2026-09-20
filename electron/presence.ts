@@ -7,8 +7,13 @@ import * as os from 'os';
  * Video, Tune) writes and reads so they can share one Ollama daemon and one
  * GPU without evicting each other's models.
  *
- *   %LOCALAPPDATA%\Strata\presence\<app>.json
+ *   <strata data dir>\presence\<app>.json
  *   { "pid": 1234, "app": "code", "models": ["qwen3.8:27b"], "since": "<ISO>" }
+ *
+ * The data dir is %LOCALAPPDATA%\Strata on Windows, ~/Library/Application
+ * Support/Strata on macOS and $XDG_DATA_HOME/Strata (~/.local/share/Strata) on
+ * Linux; STRATA_DATA_DIR overrides it everywhere. Every Strata app resolves it
+ * with this same function so the files land in one place.
  *
  * Written (tmp + rename) whenever this app sends a load request for an Ollama
  * model, updated when it unloads one, deleted at graceful quit. Readers list
@@ -29,9 +34,20 @@ export const THIS_APP: StrataApp = 'code';
 
 const since = new Date().toISOString();
 
+/** The per-user folder shared by every Strata app (presence files, downloaded GGUFs, coder config). */
+export function strataDataDir(): string {
+  if (process.env.STRATA_DATA_DIR) return process.env.STRATA_DATA_DIR;
+  if (process.platform === 'win32') {
+    return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'Strata');
+  }
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'Strata');
+  }
+  return path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), 'Strata');
+}
+
 export function presenceDir(): string {
-  const base = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
-  return path.join(base, 'Strata', 'presence');
+  return path.join(strataDataDir(), 'presence');
 }
 
 function ownFile(): string {
