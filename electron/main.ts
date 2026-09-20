@@ -682,6 +682,8 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
+    // macOS in development runs inside the stock Electron bundle: the Dock icon is set here so it never shows Electron's (the packaged .app carries its own icns).
+    if (IS_MAC && !app.isPackaged) app.dock?.setIcon(path.join(__dirname, '../assets/strata-code-sc-256.png'));
     Menu.setApplicationMenu(null);
     await createWindow();
 
