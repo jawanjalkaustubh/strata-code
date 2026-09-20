@@ -1,4 +1,7 @@
 import { ToolExecutor, OLLAMA_TOOLS } from './tools';
+import { SHELL_NAME } from './tools';
+/** The line-count idiom the architect is shown for its Verify section: PowerShell on Windows, the POSIX shell elsewhere (a Mac has no Get-Content). */
+const LINE_COUNT_EXAMPLE = process.platform === 'win32' ? '(Get-Content docs/x.md).Count' : 'wc -l < docs/x.md';
 import {
   buildProjectProfile, buildRetrievalBlock, chooseVerifyCommands, compactVerifyOutput,
   outlineSource as outlineSourceText, summarizeDiff, ProjectProfile
@@ -157,7 +160,8 @@ export class AgentEngine {
   abortController: AbortController | null = null;
   history: AgentMessage[] = [];
   pendingApprovals = new Map<string, (approved: boolean) => void>();
-  gpuName: string = 'RTX 5090';
+  /** The GPU the hardware probe found (main.ts detectHardwareInfo), named in the transcript and the prompts; until it answers, a neutral word. */
+  gpuName: string = 'the local GPU';
   providerConfig: ProviderConfig = {
     activeProvider: 'ollama',
     hybridMode: false,
@@ -234,7 +238,7 @@ export class AgentEngine {
     this.send('hybrid:disabled', { reason, fallbackModel: workerModel });
 
     return `> 🛡️ **Local Dual-Brain Notice**: ${reason}\n>\n` +
-           `> Continuing 100% locally on your NVIDIA RTX 5090 GPU (\`${workerModel}\`) with zero interruption, zero cost, and unlimited local tokens!\n\n`;
+           `> Continuing 100% locally on your ${this.gpuName} GPU (\`${workerModel}\`) with zero interruption, zero cost, and unlimited local tokens!\n\n`;
   }
 
   recordGeminiUsage(
@@ -392,14 +396,14 @@ export class AgentEngine {
       const timeStr = new Date().toLocaleTimeString();
       let entry = '';
       if (type === 'USER') {
-        entry = `\n\n---\n## 👤 User Prompt\n> **"${content}"**\n*(Architecture: Local Dual-Brain • Hardware: NVIDIA RTX 5090 • Time: ${timeStr})*\n`;
+        entry = `\n\n---\n## 👤 User Prompt\n> **"${content}"**\n*(Architecture: Local Dual-Brain • Hardware: ${this.gpuName} • Time: ${timeStr})*\n`;
       } else if (type === 'ARCHITECT') {
         entry = `\n${content}\n`;
       } else if (type === 'WORKER') {
         if (content.startsWith('### 💻') || content.startsWith('> 🔧')) {
           entry = `\n${content}\n`;
         } else {
-          entry = `\n### 💻 Local Coder Worker (RTX 5090) ➔ @Local Architect\n\n${content}\n`;
+          entry = `\n### 💻 Local Coder Worker (${this.gpuName}) ➔ @Local Architect\n\n${content}\n`;
         }
       } else if (type === 'VERIFICATION') {
         entry = `\n${content}\n`;
@@ -1083,7 +1087,7 @@ export class AgentEngine {
   /** Human-facing name for the architect, used in transcript labels. */
   architectLabel(modelId?: string): string {
     const id = modelId || this.architectModelId();
-    return `Local Architect (${id} • RTX 5090)`;
+    return `Local Architect (${id} • ${this.gpuName})`;
   }
 
   /** True when the local architect is available (always true). */
@@ -1230,7 +1234,7 @@ export class AgentEngine {
   /**
    * Pure Local Dual-Brain Router:
    * Coordinates Brain 1 (General Architect) and Brain 2 (Coder Worker)
-   * with zero cloud tokens and $0.00 cost on RTX 5090.
+   * with zero cloud tokens and $0.00 cost on the local GPU.
    */
   planHybridRun(
     prompt: string,
@@ -1260,7 +1264,7 @@ export class AgentEngine {
     else if (band === 'trivial' && !isSingleWordAck) reasons.push('mechanical task - direct worker');
 
     const head = useArchitect
-      ? `${band} task (score ${classification.score}) - Local Dual-Brain Architect (RTX 5090 • $0.00)`
+      ? `${band} task (score ${classification.score}) - Local Dual-Brain Architect (${this.gpuName} • $0.00)`
       : `${band} task (score ${classification.score}) - direct local coder execution`;
 
     return {
@@ -1443,7 +1447,7 @@ ${parts.join('\n\n')}`;
       // fresh directive on the next run.
       if (role === 'assistant' && !hasToolCalls && content.startsWith('### 🧠 Local Architect (Brain 1')) {
         role = 'user';
-        content = `[LEAD ARCHITECT DIRECTIVE (Brain 1 • General Model)]:\n${content}\n\n[MANDATORY WORKER EXECUTION INSTRUCTION]:\nYou are the Autonomous Implementation Worker running locally on this NVIDIA RTX 5090 workstation.\nImmediately execute the architectural blueprint above by calling workspace tools (search_codebase, read_file, write_file, edit_file, run_command, list_files). Do NOT echo or repeat the blueprint. Do NOT output conversational pleasantries. Directly invoke the required tool.`;
+        content = `[LEAD ARCHITECT DIRECTIVE (Brain 1 • General Model)]:\n${content}\n\n[MANDATORY WORKER EXECUTION INSTRUCTION]:\nYou are the Autonomous Implementation Worker running locally on this ${this.gpuName} workstation.\nImmediately execute the architectural blueprint above by calling workspace tools (search_codebase, read_file, write_file, edit_file, run_command, list_files). Do NOT echo or repeat the blueprint. Do NOT output conversational pleasantries. Directly invoke the required tool.`;
       }
 
       if (m.role === 'user' && m.images && m.images.length > 0) {
@@ -1891,7 +1895,7 @@ ${parts.join('\n\n')}`;
       if (role === 'assistant' && !hasToolCalls && content.startsWith('### 🧠 Local Architect (Brain 1')) {
         role = 'user';
         content = `[LEAD ARCHITECT DIRECTIVE]\n${content}\n\n[MANDATORY WORKER EXECUTION INSTRUCTION]:
-You are the Autonomous Implementation Worker on this NVIDIA RTX 5090 workstation.
+You are the Autonomous Implementation Worker on this ${this.gpuName} workstation.
 1. DO NOT thank the architect.
 2. DO NOT summarize or re-explain the blueprint.
 3. DO NOT output conversational pleasantries.
@@ -2438,7 +2442,7 @@ WORKING METHOD (follow exactly):
     }
     let architectProvider = this.architectProviderFor(architectModel);
     if (architectProvider !== 'local' && !this.hasArchitectKey(architectModel)) {
-      console.log(`[Hybrid] No ${architectProvider} key configured - architect runs locally on the RTX 5090 (free).`);
+      console.log(`[Hybrid] No ${architectProvider} key configured - architect runs locally on the ${this.gpuName} (free).`);
       architectProvider = 'local';
       architectModel = 'local';
     }
@@ -2553,7 +2557,7 @@ WORKING METHOD (follow exactly):
           model: m,
           senderModelType: 'offline',
           senderRole: 'worker',
-          senderName: `Local Coder Worker (${m} • RTX 5090)`,
+          senderName: `Local Coder Worker (${m} • ${this.gpuName})`,
           addressedTo: 'Local Architect'
         }
       : { model: m };
@@ -3060,7 +3064,7 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
         title: doneTask ? `✓ Task ${doneTask.id}: ${doneTask.title.slice(0, 60)}` : `Executed: ${toolName}`,
         message: doneTask
           ? `${toolName} on ${target || 'workspace'} completed checklist task ${doneTask.id}`
-          : `Processed ${toolName} ${isHybrid ? 'on local RTX 5090' : 'locally on RTX 5090'}`
+          : `Processed ${toolName} ${isHybrid ? `on local ${this.gpuName}` : `locally on ${this.gpuName}`}`
       });
       return 'ok';
     };
@@ -3293,8 +3297,8 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
               stage: 'verified',
               title: 'Response Complete',
               message: isHybrid
-                ? 'Completed by local worker on RTX 5090'
-                : `Completed on RTX 5090 (${localTokensAccumulated.toLocaleString()} local tokens)`
+                ? `Completed by local worker on ${this.gpuName}`
+                : `Completed on ${this.gpuName} (${localTokensAccumulated.toLocaleString()} local tokens)`
             });
           }
           looping = false;
@@ -3326,7 +3330,7 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
         title: advisoryRun
           ? 'Direct Worker — Analysis Request (answer in chat, no file changes)'
           : /question/.test(hybridPlan.reason) ? 'Direct Worker — Question' : 'Direct Worker Execution — Mechanical Task',
-        message: `${hybridPlan.reason}. Running entirely on the RTX 5090 ($0.00 cost).`
+        message: `${hybridPlan.reason}. Running entirely on the ${this.gpuName} ($0.00 cost).`
       });
       activeProvider = 'ollama';
     } else if (isHybrid) {
@@ -3343,7 +3347,7 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
           : hybridTier === 'high' ? '4-8 tasks, each with function/contract-level detail, and an explicit verification task'
           : '3-6 tasks';
         const tierProtocol = `COLLABORATIVE ARCHITECTURE PROTOCOL (${hybridTier.toUpperCase()} TIER):
-You are the Lead Architect (Brain 1 • ${architectModel}) running locally on the user's NVIDIA RTX 5090, planning for the Specialist Coder Worker (Brain 2 • ${workerModel}). You do NOT execute tools; the worker does. You have the real workspace facts below - use those exact paths and line numbers, never invented ones.
+You are the Lead Architect (Brain 1 • ${architectModel}) running locally on the user's ${this.gpuName}, planning for the Specialist Coder Worker (Brain 2 • ${workerModel}). You do NOT execute tools; the worker does. You have the real workspace facts below - use those exact paths and line numbers, never invented ones.
 
 Respond in EXACTLY this markdown structure and nothing else:
 ## Goal
@@ -3356,7 +3360,7 @@ Respond in EXACTLY this markdown structure and nothing else:
 ## Risks
 - <one line each; omit the section if none>
 
-Rules: ${taskBudget}. Every edit task names its file(s). If the WORKSPACE CONTEXT already pins down the exact lines, the first task is the edit itself - do not add a "read the file" task. Prefer edit_file over rewriting files. If the request asks for a design, architecture, plan, proposal or document, the deliverable is ONE NEW file the worker creates with write_file (e.g. docs/<topic>.md) - make that an explicit task with the path; inspection alone never completes such a request, and do NOT add implementation tasks the user did not ask for (a design request is done when the document is written). NEVER plan to overwrite or "update" existing documentation or source files the user did not name - existing docs are reference material, not the deliverable. Verify a document with a line count (e.g. \`(Get-Content docs/x.md).Count\`), never by printing it. You have no tools: never write "let me inspect" - plan from the facts above. No prose outside the sections, no code blocks except commands.`;
+Rules: ${taskBudget}. Every edit task names its file(s). If the WORKSPACE CONTEXT already pins down the exact lines, the first task is the edit itself - do not add a "read the file" task. Prefer edit_file over rewriting files. If the request asks for a design, architecture, plan, proposal or document, the deliverable is ONE NEW file the worker creates with write_file (e.g. docs/<topic>.md) - make that an explicit task with the path; inspection alone never completes such a request, and do NOT add implementation tasks the user did not ask for (a design request is done when the document is written). NEVER plan to overwrite or "update" existing documentation or source files the user did not name - existing docs are reference material, not the deliverable. Commands run in ${SHELL_NAME}; write them for that shell. Verify a document with a line count (e.g. \`${LINE_COUNT_EXAMPLE}\`), never by printing it. You have no tools: never write "let me inspect" - plan from the facts above. No prose outside the sections, no code blocks except commands.`;
 
         // Read the workspace BEFORE planning, locally and for free.
         const grounding = await this.buildWorkspaceGrounding(editorContext, { profile: projectProfile, retrievalBlock });
@@ -3448,7 +3452,7 @@ Rules: ${taskBudget}. Every edit task names its file(s). If the WORKSPACE CONTEX
           stage: 'plan',
           activeRole: 'architect',
           title: `Local Blueprint Formulated (${hybridTier.toUpperCase()}) — ${plan.tasks.length} tasks`,
-          message: `Local Architect (${planRes.modelUsed}) produced a ${plan.tasks.length}-task checklist. Local execution beginning on RTX 5090 ($0.00 cost).`
+          message: `Local Architect (${planRes.modelUsed}) produced a ${plan.tasks.length}-task checklist. Local execution beginning on ${this.gpuName} ($0.00 cost).`
         });
 
         // Switch to local execution on subsequent turns
@@ -3460,7 +3464,7 @@ Rules: ${taskBudget}. Every edit task names its file(s). If the WORKSPACE CONTEX
         collab({
           stage: 'fallback',
           title: 'Direct Local Execution Active',
-          message: `Directly running locally on RTX 5090 (${workerModel}) ($0.00 cost)!`
+          message: `Directly running locally on ${this.gpuName} (${workerModel}) ($0.00 cost)!`
         });
         activeProvider = 'ollama';
       }
@@ -3530,7 +3534,7 @@ Rules: ${taskBudget}. Every edit task names its file(s). If the WORKSPACE CONTEX
         .slice(0, 2000);
 
       const verifyProtocol = `COLLABORATIVE VERIFICATION PROTOCOL (${hybridTier.toUpperCase()} TIER):
-You are the Lead Architect (Brain 1 • ${architectModel}) running locally on the user's NVIDIA RTX 5090. You gave the blueprint to the local coder worker (${workerModel}). Review the EVIDENCE below - the actual diffs and verification results - not the worker's description of its work.
+You are the Lead Architect (Brain 1 • ${architectModel}) running locally on the user's ${this.gpuName}. You gave the blueprint to the local coder worker (${workerModel}). Review the EVIDENCE below - the actual diffs and verification results - not the worker's description of its work.
 
 Respond in EXACTLY this structure:
 VERDICT: APPROVE   (or)   VERDICT: REVISE
@@ -3580,7 +3584,7 @@ Say REVISE only for a real defect visible in the evidence: a failed verification
         && state.reviewRounds < maxReviewRounds
         && !signal.aborted;
 
-      const footer = `\n\n---\n*⚡ Pure Local Dual-Brain • 100% Offline ($0.00) • NVIDIA RTX 5090${needsRevise ? ' • sending the worker back for one revision round' : ''}*`;
+      const footer = `\n\n---\n*⚡ Pure Local Dual-Brain • 100% Offline ($0.00) • ${this.gpuName}${needsRevise ? ' • sending the worker back for one revision round' : ''}*`;
       emitArchitectToken(footer, 'User & Local Coder Worker', reviewModel);
       const fullVerifyMsg = `${verifyHeader(reviewModel)}${verifyContent}${footer}`;
       this.history.push({ role: 'assistant', content: fullVerifyMsg });
@@ -3647,7 +3651,7 @@ Say REVISE only for a real defect visible in the evidence: a failed verification
           collab({
             stage: 'verified',
             title: `Task Completed (${hybridTier.toUpperCase()})`,
-            message: 'Local RTX 5090 worker delivered the solution; the architect review could not run.'
+            message: `Local ${this.gpuName} worker delivered the solution; the architect review could not run.`
           });
         }
       } else {
@@ -3658,17 +3662,17 @@ Say REVISE only for a real defect visible in the evidence: a failed verification
             ? (advisoryRun ? 'Analysis Delivered' : 'Response Complete')
             : didWork ? `Task Completed (${hybridTier.toUpperCase()})` : 'Response Complete',
           message: directRun
-            ? `Answered directly by the local worker on RTX 5090 (${state.toolCalls} inspection call(s), ${state.edited.size} file(s) changed).`
+            ? `Answered directly by the local worker on ${this.gpuName} (${state.toolCalls} inspection call(s), ${state.edited.size} file(s) changed).`
             : didWork
-              ? 'Local RTX 5090 worker delivered the solution based on the architect directive.'
-              : 'Answered directly by the local worker on RTX 5090 (no edits, so no review round).'
+              ? `Local ${this.gpuName} worker delivered the solution based on the architect directive.`
+              : `Answered directly by the local worker on ${this.gpuName} (no edits, so no review round).`
         });
       }
     } else if (!isHybrid && !signal.aborted && localTokensAccumulated > 0) {
       collab({
         stage: 'verified',
         title: 'Local Execution Complete',
-        message: `Task completed 100% locally on NVIDIA RTX 5090${state.verifyReports.length ? ` • verification ${state.verifyReports[state.verifyReports.length - 1].passed ? 'passed' : 'failed'}` : ''}`
+        message: `Task completed 100% locally on ${this.gpuName}${state.verifyReports.length ? ` • verification ${state.verifyReports[state.verifyReports.length - 1].passed ? 'passed' : 'failed'}` : ''}`
       });
     }
 
