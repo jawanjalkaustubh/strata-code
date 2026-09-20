@@ -86,6 +86,8 @@ const TitleBarInner: React.FC<TitleBarProps> = ({
 }) => {
   const openModelModal = onOpenDualBrainModal;
   const api = (window as any).api;
+  // macOS draws its own traffic lights at the left of the frameless window (electron/main.ts hiddenInset): the bar leaves them room and draws no controls of its own.
+  const isMac = api?.platform === 'darwin';
   const [openMenu, setOpenMenu] = useState<'file' | 'view' | 'help' | null>(null);
   const menuContainerRef = useRef<HTMLDivElement>(null);
 
@@ -117,7 +119,7 @@ const TitleBarInner: React.FC<TitleBarProps> = ({
           ROW 1: SYSTEM TITLE BAR (App Icon, Menus, Drag Region, Window Controls)
           Anchored flex-shrink-0 window controls are NEVER cut off during resize!
           ========================================================================= */}
-      <div className="custom-titlebar h-9 bg-studio-surface border-b border-studio-border flex items-center justify-between px-2.5 select-none relative">
+      <div className="custom-titlebar h-9 bg-studio-surface border-b border-studio-border flex items-center justify-between px-2.5 select-none relative" style={isMac ? { paddingLeft: 78 } : undefined}>
         {/* Left: Brand Icon + Native-style Menus */}
         <div className="flex items-center space-x-1 no-drag" ref={menuContainerRef} style={{ WebkitAppRegion: 'no-drag' } as any}>
           {/* Brand Logo & Name */}
@@ -465,9 +467,11 @@ const TitleBarInner: React.FC<TitleBarProps> = ({
             </div>
           )}
 
+          {!isMac && (
+          <>
           <div className="h-4 w-[1px] bg-studio-border mx-1 flex-shrink-0" />
 
-          {/* Window Control Buttons (Minimize, Maximize, Close) - Fixed, Unbreakable, Never Cut Off */}
+          {/* Window Control Buttons (Minimize, Maximize, Close) - Fixed, Unbreakable, Never Cut Off; macOS has its traffic lights instead */}
           <div className="flex items-center h-full flex-shrink-0">
             <button
               onClick={() => api?.minimize?.()}
@@ -494,6 +498,8 @@ const TitleBarInner: React.FC<TitleBarProps> = ({
               <X size={14} />
             </button>
           </div>
+          </>
+          )}
         </div>
       </div>
 
