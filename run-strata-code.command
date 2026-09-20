@@ -35,4 +35,28 @@ if ! curl -fs http://127.0.0.1:11434/api/version >/dev/null 2>&1; then
 fi
 
 echo "[*] Launching Strata Code..."
+# Name and icon. In development the app runs inside the stock Electron bundle, which macOS
+# shows as "Electron" in the Dock, the menu bar and the app switcher. The bundle is only
+# ad-hoc signed, so its Info.plist and icon can be replaced and the app re-signed ad hoc
+# (what @electron/packager does at packaging time). Done once per Electron install.
+brand_electron() {
+  local app="node_modules/electron/dist/Electron.app" plist png="assets/strata-code-sc-256.png"
+  plist="$app/Contents/Info.plist"
+  [ -f "$plist" ] || return 0
+  [ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleDisplayName' "$plist" 2>/dev/null)" = "Strata Code" ] && return 0
+  echo "[*] Naming the Electron bundle Strata Code..."
+  /usr/libexec/PlistBuddy -c 'Set :CFBundleName Strata Code' -c 'Set :CFBundleDisplayName Strata Code' "$plist" || return 0
+  if [ -f "$png" ] && command -v sips >/dev/null && command -v iconutil >/dev/null; then
+    local set; set="$(mktemp -d)/icon.iconset"; mkdir -p "$set"
+    for s in 16 32 128 256 512; do
+      sips -z $s $s "$png" --out "$set/icon_${s}x${s}.png" >/dev/null 2>&1 || true
+      d=$((s*2)); [ $d -le 1024 ] && sips -z $d $d "$png" --out "$set/icon_${s}x${s}@2x.png" >/dev/null 2>&1 || true
+    done
+    iconutil -c icns "$set" -o "$app/Contents/Resources/electron.icns" 2>/dev/null || true
+    rm -rf "$(dirname "$set")"
+  fi
+  codesign --force --sign - "$app" >/dev/null 2>&1 || echo "[!] could not re-sign the Electron bundle; the name may show as Electron"
+}
+brand_electron
+
 exec npm start
