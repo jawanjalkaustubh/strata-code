@@ -18,6 +18,7 @@
 #    --general <ollama tag>|none  general model for Ollama (default: by memory)
 #    --skip-models              only Homebrew packages + build
 #    --no-build                 do not run npm install / npm run build
+#    --no-shortcuts             do not create the ~/Applications app + Desktop alias
 #    --yes                      no prompts (accept Homebrew install, big downloads)
 #
 #  Where things land (see electron/paths.ts):
@@ -31,6 +32,7 @@ CODER="auto"
 GENERAL="auto"
 SKIP_MODELS=0
 NO_BUILD=0
+NO_SHORTCUTS=0
 YES=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -38,6 +40,7 @@ while [ $# -gt 0 ]; do
     --general) GENERAL="$2"; shift 2 ;;
     --skip-models) SKIP_MODELS=1; shift ;;
     --no-build) NO_BUILD=1; shift ;;
+    --no-shortcuts) NO_SHORTCUTS=1; shift ;;
     --yes|-y) YES=1; shift ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
@@ -71,7 +74,7 @@ echo "  Data: $DATA"
 echo
 
 # ---------------------------------------------------------------------------
-step "1/6 System check"
+step "1/7 System check"
 # ---------------------------------------------------------------------------
 [ "$(uname -s)" = "Darwin" ] || fail "This script is for macOS. On Windows use installer/Install.bat."
 ARCH="$(uname -m)"
@@ -118,7 +121,7 @@ fi
 [ "$GENERAL" != "none" ] && log "General model (Ollama): $GENERAL"
 
 # ---------------------------------------------------------------------------
-step "2/6 Homebrew, Node, Ollama, llama.cpp"
+step "2/7 Homebrew, Node, Ollama, llama.cpp"
 # ---------------------------------------------------------------------------
 if ! command -v brew >/dev/null 2>&1; then
   if [ -x /opt/homebrew/bin/brew ]; then eval "$(/opt/homebrew/bin/brew shellenv)"; fi
@@ -142,7 +145,7 @@ command -v llama-server >/dev/null 2>&1 || fail "llama-server is not on PATH aft
 log "node $(node --version), npm $(npm --version), ollama $(ollama --version 2>/dev/null | head -1), $(llama-server --version 2>&1 | head -1)"
 
 # ---------------------------------------------------------------------------
-step "3/6 Ollama service + general model"
+step "3/7 Ollama service + general model"
 # ---------------------------------------------------------------------------
 if [ "$SKIP_MODELS" = 1 ] || [ "$GENERAL" = "none" ]; then
   log "Skipped."
@@ -161,7 +164,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-step "4/6 Coder model (llama.cpp GGUF)"
+step "4/7 Coder model (llama.cpp GGUF)"
 # ---------------------------------------------------------------------------
 mkdir -p "$MODELS_DIR" "$CODE_DIR"
 if [ "$SKIP_MODELS" = 1 ] || [ -z "$CODER_NAME" ]; then
@@ -182,7 +185,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-step "5/6 coder-config.json"
+step "5/7 coder-config.json"
 # ---------------------------------------------------------------------------
 if [ -n "$CODER_NAME" ]; then
   cat > "$CONFIG" <<JSON
@@ -199,7 +202,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-step "6/6 App dependencies + build"
+step "6/7 App dependencies + build"
 # ---------------------------------------------------------------------------
 if [ "$NO_BUILD" = 1 ]; then
   log "Skipped."
@@ -211,6 +214,9 @@ else
   npm run build 2>&1 | tee -a "$LOG" | tail -3
 fi
 
+step "7/7 Shortcuts (~/Applications + Desktop)"
+if [ "$NO_SHORTCUTS" = 1 ]; then log "Skipped."; else "$REPO/scripts/mac/install-shortcuts.sh" 2>&1 | tee -a "$LOG"; fi
+
 echo
-log "Done. Launch with:  open \"$REPO/run-strata-code.command\"   (or: cd \"$REPO\" && npm start)"
+log "Done. Launch Strata Code from Launchpad / the Desktop shortcut, or:  open \"$REPO/run-strata-code.command\""
 log "The app shows the License Agreement (EULA.md) on first launch."

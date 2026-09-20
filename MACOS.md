@@ -34,7 +34,11 @@ Options: `--coder Q6_K|Q4_K_M|none`, `--general <ollama tag>|none`,
 
 ## Run
 
-Double-click **`run-strata-code.command`** in Finder, or:
+Setup ends by installing **Strata Code.app** in `~/Applications` (Launchpad,
+Spotlight; drag it to the Dock) and an alias on the Desktop — the macOS twin of
+`Install-Shortcuts.ps1`. Re-create them any time with
+`scripts/mac/install-shortcuts.sh` (`--remove` deletes them). Or double-click
+**`run-strata-code.command`** in Finder, or:
 
 ```bash
 npm start
