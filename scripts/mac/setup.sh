@@ -62,6 +62,15 @@ Q4_NAME="Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf"; Q4_BYTES=18556689568
 log()  { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$LOG"; }
 step() { echo; log "=== $* ==="; }
 fail() { log "ERROR: $*"; echo; echo "Setup did not complete. See $LOG. Re-run the script; downloads resume." >&2; exit 1; }
+# Runs a long command with its output live on the terminal (progress bars included) and records its exit
+# code plus last line in the log. Piping through `tail` looked like a hang: tail prints nothing until EOF,
+# so an 18 GB `ollama pull` showed a blank screen for half an hour.
+run_live() {
+  local rc=0
+  "$@" || rc=$?
+  log "$(printf '%q ' "$@")-> exit $rc"
+  return $rc
+}
 confirm() {
   [ "$YES" = 1 ] && return 0
   read -r -p "$1 [y/N] " a; [[ "$a" =~ ^[Yy] ]]
@@ -138,7 +147,7 @@ for pkg in node ollama llama.cpp; do
     log "$pkg already installed ($(brew list --versions "$pkg"))"
   else
     log "brew install $pkg"
-    brew install "$pkg" 2>&1 | tee -a "$LOG" | tail -3
+    run_live brew install "$pkg"
   fi
 done
 command -v llama-server >/dev/null 2>&1 || fail "llama-server is not on PATH after brew install llama.cpp. Open a new terminal and re-run, or run: eval \"\$(/opt/homebrew/bin/brew shellenv)\""
@@ -159,7 +168,7 @@ else
   if ollama list 2>/dev/null | awk '{print $1}' | grep -qx "$GENERAL"; then
     log "$GENERAL already pulled"
   else
-    confirm "Pull $GENERAL into Ollama now (large download)?" && ollama pull "$GENERAL" 2>&1 | tee -a "$LOG" | tail -2 || log "Skipped $GENERAL; pull it later with: ollama pull $GENERAL"
+    confirm "Pull $GENERAL into Ollama now (large download)?" && run_live ollama pull "$GENERAL" || log "Skipped $GENERAL; pull it later with: ollama pull $GENERAL"
   fi
 fi
 
@@ -177,7 +186,7 @@ else
   else
     [ "$have" -gt 0 ] && log "Resuming $CODER_NAME from $have bytes"
     confirm "Download $CODER_NAME ($(( CODER_BYTES / 1024 / 1024 / 1024 )) GB) to $MODELS_DIR?" || fail "Coder download declined; re-run later, or use --coder none."
-    curl -L --fail --retry 5 --retry-delay 5 -C - -o "$DEST" "$CODER_REPO/$CODER_NAME" 2>&1 | tee -a "$LOG" | tail -1
+    run_live curl -L --fail --retry 5 --retry-delay 5 -C - --progress-bar -o "$DEST" "$CODER_REPO/$CODER_NAME"
     have=$(stat -f %z "$DEST")
     [ "$have" = "$CODER_BYTES" ] || fail "$CODER_NAME is $have bytes, expected $CODER_BYTES. Re-run to resume."
     log "Downloaded $CODER_NAME"
@@ -209,9 +218,9 @@ if [ "$NO_BUILD" = 1 ]; then
 else
   cd "$REPO"
   log "npm install"
-  npm install --no-audit --no-fund 2>&1 | tee -a "$LOG" | tail -2
+  run_live npm install --no-audit --no-fund
   log "npm run build"
-  npm run build 2>&1 | tee -a "$LOG" | tail -3
+  run_live npm run build
 fi
 
 step "7/7 Shortcuts (~/Applications + Desktop)"
