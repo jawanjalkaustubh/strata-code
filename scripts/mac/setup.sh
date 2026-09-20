@@ -142,7 +142,7 @@ if ! command -v brew >/dev/null 2>&1; then
   eval "$(/opt/homebrew/bin/brew shellenv)"
 fi
 log "Homebrew: $(brew --version | head -1)"
-for pkg in node ollama llama.cpp; do
+for pkg in node@24 ollama llama.cpp; do
   if brew list --versions "$pkg" >/dev/null 2>&1; then
     log "$pkg already installed ($(brew list --versions "$pkg"))"
   else
@@ -150,6 +150,18 @@ for pkg in node ollama llama.cpp; do
     run_live brew install "$pkg"
   fi
 done
+# Node 24 (LTS), not Homebrew's plain `node` (26 today): two things Electron needs break on 26 -
+# extract-zip, which unpacks Electron.app in electron's postinstall, exits silently after the first
+# entry (node_modules/electron/dist ends up holding only LICENSES.chromium.html), and better-sqlite3
+# has no Node 26 build. node@24 is keg-only, so it goes first on PATH here and gets linked so that
+# `node` in a new terminal is 24 as well.
+NODE24="$(brew --prefix node@24)/bin"
+[ -x "$NODE24/node" ] || fail "node@24 not found at $NODE24"
+export PATH="$NODE24:$PATH"
+if [ "$("$(brew --prefix)/bin/node" --version 2>/dev/null | cut -d. -f1)" != "v24" ]; then
+  brew list --versions node >/dev/null 2>&1 && brew unlink node >/dev/null 2>&1 || true
+  brew link --overwrite node@24 >/dev/null 2>&1 || log "WARNING: could not link node@24; scripts use $NODE24 directly"
+fi
 command -v llama-server >/dev/null 2>&1 || fail "llama-server is not on PATH after brew install llama.cpp. Open a new terminal and re-run, or run: eval \"\$(/opt/homebrew/bin/brew shellenv)\""
 log "node $(node --version), npm $(npm --version), ollama $(ollama --version 2>/dev/null | head -1), $(llama-server --version 2>&1 | head -1)"
 

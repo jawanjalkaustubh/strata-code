@@ -11,7 +11,7 @@ unified memory instead of a discrete GPU. Nothing leaves the machine.
 | Mac | Apple Silicon (M1 or later), macOS 14 | M4 Pro/Max, macOS 15 |
 | Unified memory | 24 GB (coder at 16K context, general model 8B) | 48 GB+ (Q6_K coder at 64K context + qwen3.8:27b) |
 | Disk | ~45 GB free under `$HOME` | SSD with 100 GB free |
-| Tools | Homebrew, Node 20+, Ollama, llama.cpp | installed by `scripts/mac/setup.sh` |
+| Tools | Homebrew, Node 24 (LTS), Ollama, llama.cpp | installed by `scripts/mac/setup.sh` |
 
 Intel Macs run, on the CPU, at a few tokens per second. Not worth it.
 
@@ -23,7 +23,7 @@ cd strata-code
 scripts/mac/setup.sh          # add --yes for no prompts
 ```
 
-The script checks the chip and memory, installs `node`, `ollama` and
+The script checks the chip and memory, installs `node@24`, `ollama` and
 `llama.cpp` with Homebrew (and Homebrew itself if missing), pulls the general
 model into Ollama, downloads the coder GGUF with resume support, writes a
 `coder-config.json` sized for this machine, then `npm install` + `npm run build`.
@@ -97,6 +97,13 @@ Environment overrides: `STRATA_DATA_DIR`, `STRATA_MODELS_DIR`,
 
 ## Troubleshooting
 
+- **"Electron failed to install correctly"** on launch, or
+  `node_modules/electron/dist` holding only `LICENSES.chromium.html`: the
+  dependencies were installed with Node 26 (Homebrew's plain `node`), where
+  Electron's unpacker stops silently after the first file. Setup installs and
+  links `node@24`; if you installed Node yourself, run
+  `brew install node@24 && brew link --overwrite node@24`, then
+  `node node_modules/electron/install.js` in the repo.
 - **"llama-server not found"** in the status bar: `brew install llama.cpp`,
   then relaunch from `run-strata-code.command` (it fixes `PATH`).
 - **The coder exits while loading** on a 24-32 GB Mac: the GPU wired limit

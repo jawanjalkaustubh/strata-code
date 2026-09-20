@@ -8,6 +8,8 @@ cd "$(dirname "$0")" || exit 1
 # A Finder launch has no Homebrew on PATH.
 if [ -x /opt/homebrew/bin/brew ]; then eval "$(/opt/homebrew/bin/brew shellenv)"; fi
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+# Node 24 first: Node 26 breaks Electron's installer (extract-zip) and better-sqlite3 (see MACOS.md).
+[ -d /opt/homebrew/opt/node@24/bin ] && export PATH="/opt/homebrew/opt/node@24/bin:$PATH"
 
 if ! command -v node >/dev/null 2>&1; then
   echo "Node is not installed. Run scripts/mac/setup.sh first." >&2
