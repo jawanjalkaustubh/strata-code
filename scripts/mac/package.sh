@@ -13,8 +13,8 @@ npm run build
 # .icns from the 256 px PNG with the system tools (no extra dependency).
 ICONSET="$(mktemp -d)/strata.iconset"; mkdir -p "$ICONSET"
 for s in 16 32 64 128 256; do
-  sips -z $s $s assets/strata-256.png --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
-  d=$((s*2)); [ $d -le 512 ] && sips -z $d $d assets/strata-256.png --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
+  sips -z $s $s assets/strata-code-sc-256.png --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
+  d=$((s*2)); [ $d -le 512 ] && sips -z $d $d assets/strata-code-sc-256.png --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
 done
 iconutil -c icns "$ICONSET" -o assets/strata-code.icns
 

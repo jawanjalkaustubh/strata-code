@@ -346,7 +346,7 @@ function createWindow() {
     ...(IS_MAC ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 12, y: 12 } } : {}),
     title: 'Strata Code',
     // .ico is Windows-only; macOS takes the PNG here in dev (the .app bundle's icns when packaged).
-    icon: path.join(__dirname, IS_WIN ? '../assets/strata-code-sc.ico' : '../assets/strata-256.png'),
+    icon: path.join(__dirname, IS_WIN ? '../assets/strata-code-sc.ico' : '../assets/strata-code-sc-256.png'),
     show: true,
     backgroundColor: '#0c0e14',
     webPreferences: {

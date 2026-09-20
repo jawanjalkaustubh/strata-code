@@ -14,7 +14,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 NAME="Strata Code"
 LAUNCHER="$REPO/run-strata-code.command"
-ICON_PNG="$REPO/assets/strata-256.png"
+ICON_PNG="$REPO/assets/strata-code-sc-256.png"
 BUNDLE_ID="com.kaustubhjawanjal.stratacode"
 APPS="$HOME/Applications"
 APP="$APPS/$NAME.app"
