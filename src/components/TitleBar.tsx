@@ -4,8 +4,7 @@ import {
   DownloadCloud, Terminal as TerminalIcon, Play, RefreshCw, Plus, Save, ChevronDown, Check, 
   LogOut, HelpCircle, FileText, Sparkles, HardDrive
 } from 'lucide-react';
-import { DualBrainModal } from './DualBrainModal';
-import { TaskMode, SystemInfo, OllamaHealthStatus, HybridTier } from '../types';
+import { TaskMode, SystemInfo, OllamaHealthStatus } from '../types';
 import { STRATA_ICON } from '../assets/logo';
 
 export interface TitleBarProps {
@@ -37,14 +36,8 @@ export interface TitleBarProps {
   onCloseActiveTab?: () => void;
   onRefreshFiles?: () => void;
   activeFile?: string | null;
-  isHybrid?: boolean;
-  onToggleHybrid?: () => void;
-  hybridTier?: HybridTier;
-  onSelectHybridTier?: (tier: HybridTier) => void;
   codingModel?: string;
   generalModel?: string;
-  architectModel?: string;
-  onOpenDualBrainModal?: () => void;
 }
 
 const TitleBarInner: React.FC<TitleBarProps> = ({
@@ -75,17 +68,12 @@ const TitleBarInner: React.FC<TitleBarProps> = ({
   onCloseActiveTab,
   onRefreshFiles,
   activeFile,
-  isHybrid = false,
-  onToggleHybrid,
-  hybridTier = 'medium',
-  onSelectHybridTier,
   codingModel = 'qwen2.5-coder:32b',
-  generalModel = 'qwen3.8:27b',
-  architectModel = 'qwen3.8:27b',
-  onOpenDualBrainModal
+  generalModel = 'qwen3.8:27b'
 }) => {
-  const openModelModal = onOpenDualBrainModal;
   const api = (window as any).api;
+  // macOS draws its own traffic lights at the left of the frameless window (electron/main.ts hiddenInset): the bar leaves them room and draws no controls of its own.
+  const isMac = api?.platform === 'darwin';
   const [openMenu, setOpenMenu] = useState<'file' | 'view' | 'help' | null>(null);
   const menuContainerRef = useRef<HTMLDivElement>(null);
 
@@ -117,7 +105,7 @@ const TitleBarInner: React.FC<TitleBarProps> = ({
           ROW 1: SYSTEM TITLE BAR (App Icon, Menus, Drag Region, Window Controls)
           Anchored flex-shrink-0 window controls are NEVER cut off during resize!
           ========================================================================= */}
-      <div className="custom-titlebar h-9 bg-studio-surface border-b border-studio-border flex items-center justify-between px-2.5 select-none relative">
+      <div className="custom-titlebar h-9 bg-studio-surface border-b border-studio-border flex items-center justify-between px-2.5 select-none relative" style={isMac ? { paddingLeft: 78 } : undefined}>
         {/* Left: Brand Icon + Native-style Menus */}
         <div className="flex items-center space-x-1 no-drag" ref={menuContainerRef} style={{ WebkitAppRegion: 'no-drag' } as any}>
           {/* Brand Logo & Name */}
@@ -465,9 +453,11 @@ const TitleBarInner: React.FC<TitleBarProps> = ({
             </div>
           )}
 
+          {!isMac && (
+          <>
           <div className="h-4 w-[1px] bg-studio-border mx-1 flex-shrink-0" />
 
-          {/* Window Control Buttons (Minimize, Maximize, Close) - Fixed, Unbreakable, Never Cut Off */}
+          {/* Window Control Buttons (Minimize, Maximize, Close) - Fixed, Unbreakable, Never Cut Off; macOS has its traffic lights instead */}
           <div className="flex items-center h-full flex-shrink-0">
             <button
               onClick={() => api?.minimize?.()}
@@ -494,6 +484,8 @@ const TitleBarInner: React.FC<TitleBarProps> = ({
               <X size={14} />
             </button>
           </div>
+          </>
+          )}
         </div>
       </div>
 
@@ -547,90 +539,13 @@ const TitleBarInner: React.FC<TitleBarProps> = ({
             </button>
           </div>
 
-          {/* Architecture Switcher: Local Dual-Brain vs Direct Model */}
-          <div 
-            className="flex items-center p-0.5 bg-studio-panel/90 rounded-card border border-studio-border text-xs flex-shrink-0 select-none shadow-sm"
-            title="Toggle between Local Dual-Brain (Architect + Coder) and Direct single model mode"
-          >
-            <button
-              onClick={() => { if (!isHybrid) onToggleHybrid?.(); }}
-              className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-control text-xs font-semibold transition cursor-pointer ${
-                isHybrid
-                  ? 'bg-gradient-to-r from-role-architect-600 to-role-user-600 text-white shadow-sm shadow-role-architect-600/30 font-bold'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
-              }`}
-              title="Dual-Brain Mode: General Architect (qwen3.8:27b) plans blueprints, Specialist Coder (Qwen3-Coder-30B) executes tools autonomously on RTX 5090"
-            >
-              <Cpu size={12} className={isHybrid ? 'text-role-tool-300' : 'text-slate-400'} />
-              <span>Dual-Brain</span>
-            </button>
-            <button
-              onClick={() => { if (isHybrid) onToggleHybrid?.(); }}
-              className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-control text-xs font-semibold transition cursor-pointer ${
-                !isHybrid
-                  ? 'bg-state-ok-600 text-white shadow-sm shadow-state-ok-600/30 font-bold'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
-              }`}
-              title="Direct Mode: 100% sovereign direct chat with single local model on your RTX 5090 GPU"
-            >
-              <HardDrive size={12} className={!isHybrid ? 'text-white' : 'text-slate-400'} />
-              <span>Direct</span>
-            </button>
-          </div>
-
-          {/* Dual-Brain Planning Intensity Selector (Low | Med | High) */}
-          {isHybrid && (
-            <div 
-              className="flex items-center p-0.5 bg-studio-panel/90 rounded-card border border-role-architect-500/30 text-micro flex-shrink-0 select-none shadow-sm animate-in fade-in duration-200"
-              title="Dual-Brain Planning Intensity: Governs architectural reasoning depth on your RTX 5090"
-            >
-              <button
-                onClick={() => onSelectHybridTier?.('low')}
-                className={`px-2 py-0.5 rounded text-micro font-semibold transition cursor-pointer ${
-                  hybridTier === 'low'
-                    ? 'bg-role-architect-600 text-white font-bold shadow-sm shadow-role-architect-600/30'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
-                }`}
-                title="⚡ Low (Light): Ultra-concise directive spark from General Architect. Full execution handled by Coder Worker."
-              >
-                Low
-              </button>
-              <button
-                onClick={() => onSelectHybridTier?.('medium')}
-                className={`px-2 py-0.5 rounded text-micro font-semibold transition cursor-pointer ${
-                  hybridTier === 'medium'
-                    ? 'bg-role-architect-600 text-white font-bold shadow-sm shadow-role-architect-600/30'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
-                }`}
-                title="⚡ Med (Balanced): Step-by-step architectural blueprint from General Architect + Coder Worker execution."
-              >
-                Med
-              </button>
-              <button
-                onClick={() => onSelectHybridTier?.('high')}
-                className={`px-2 py-0.5 rounded text-micro font-semibold transition cursor-pointer ${
-                  hybridTier === 'high'
-                    ? 'bg-role-architect-600 text-white font-bold shadow-sm shadow-role-architect-600/30'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
-                }`}
-                title="⚡ High (Deep): Comprehensive architectural blueprint with verification sign-off + Coder Worker execution."
-              >
-                High
-              </button>
-            </div>
-          )}
-
-          {/* Local Coder Worker Picker */}
+          {/* Local model picker */}
           <div 
             className="flex items-center space-x-1.5 bg-studio-panel px-2 py-1 rounded-control border border-studio-border text-xs flex-shrink-0"
-            title={isHybrid 
-              ? `Local Coder Worker (${taskMode === 'coding' ? 'Coding' : 'General'}): Runs autonomously on your RTX 5090 GPU to write code and execute tools at 237 tok/s`
-              : `Offline Local Model (${taskMode === 'coding' ? 'Coding' : 'General'}): 100% sovereign on your local GPU with $0 cost`}
+            title={`Offline Local Model (${taskMode === 'coding' ? 'Coding' : 'General'}): 100% sovereign on your local GPU with $0 cost`}
           >
-            <HardDrive size={13} className={isHybrid ? "text-role-architect-400" : "text-state-ok-400"} />
-            <span className="text-micro uppercase font-bold text-slate-400 font-mono">
-              {isHybrid ? 'Coder:' : 'Model:'}
-            </span>
+            <HardDrive size={13} className="text-state-ok-400" />
+            <span className="text-micro uppercase font-bold text-slate-400 font-mono">Model:</span>
             <select
               value={activeModel}
               onChange={(e) => {
@@ -640,7 +555,7 @@ const TitleBarInner: React.FC<TitleBarProps> = ({
                   onSelectModel(e.target.value);
                 }
               }}
-              className={`bg-transparent ${isHybrid ? 'text-role-architect-300' : 'text-state-ok-300'} text-xs focus:outline-none cursor-pointer pr-1 max-w-[140px] truncate font-mono font-medium`}
+              className="bg-transparent text-state-ok-300 text-xs focus:outline-none cursor-pointer pr-1 max-w-[140px] truncate font-mono font-medium"
             >
               {models.map(m => (
                 <option key={m} value={m} className="bg-studio-panel text-slate-200">
@@ -655,20 +570,6 @@ const TitleBarInner: React.FC<TitleBarProps> = ({
               </option>
             </select>
           </div>
-
-          {/* Local Architect Model Selector Chip in Dual-Brain Mode */}
-          {isHybrid && (
-            <button
-              onClick={openModelModal}
-              className="flex items-center space-x-1.5 bg-studio-panel hover:bg-studio-surface px-2 py-1 rounded-control border border-role-architect-500/40 hover:border-role-architect-400 text-xs text-role-architect-200 transition cursor-pointer shadow-sm flex-shrink-0"
-              title="Configure Local Dual-Brain Architecture (General Architect + Coder Worker)"
-            >
-              <Sparkles size={12} className="text-role-tool-300" />
-              <span className="text-micro uppercase font-bold text-role-architect-300 font-mono">Architect:</span>
-              <span className="font-mono font-medium text-white max-w-[120px] truncate">{architectModel || 'qwen3.8:27b'}</span>
-              <span className="text-micro text-role-architect-400">▾</span>
-            </button>
-          )}
 
           {/* Dedicated Model Manager & Downloader Button */}
           <button

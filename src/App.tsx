@@ -6,11 +6,10 @@ import { ChatPanel } from './components/ChatPanel';
 import { AboutModal } from './components/AboutModal';
 import { AgreementModal } from './components/AgreementModal';
 import { ModelManagerModal } from './components/ModelManagerModal';
-import { DualBrainModal } from './components/DualBrainModal';
 import { TerminalDrawer } from './components/TerminalDrawer';
 import { StatusBar } from './components/StatusBar';
 import { 
-  FileNode, OpenTab, ChatMessage, ToolCallItem, TaskMode, OllamaModelDetail, PullProgressData, SystemInfo, ActiveDiff, OllamaHealthStatus, CollaborateStepData, ProviderConfig, HybridTier 
+  FileNode, OpenTab, ChatMessage, ToolCallItem, TaskMode, OllamaModelDetail, PullProgressData, SystemInfo, ActiveDiff, OllamaHealthStatus, EngineStepData, ProviderConfig 
 } from './types';
 import { STRATA_ICON } from './assets/logo';
 import { useEventCallback } from './hooks';
@@ -60,7 +59,6 @@ export const App: React.FC = () => {
   const [modelDetails, setModelDetails] = useState<OllamaModelDetail[]>([]);
   const [pullProgress, setPullProgress] = useState<PullProgressData | null>(null);
   const [isModelManagerOpen, setIsModelManagerOpen] = useState<boolean>(false);
-  const [isDualBrainModalOpen, setIsDualBrainModalOpen] = useState<boolean>(false);
 
   const activeModel = taskMode === 'coding' ? codingModel : generalModel;
   const activeModelRef = useRef(activeModel);
@@ -135,110 +133,38 @@ export const App: React.FC = () => {
   const [chatPanelWidth, setChatPanelWidth] = useState<number>(460);
   const [isDragging, setIsDragging] = useState<'fileTree' | 'chatPanel' | null>(null);
 
-  // 100% Fully Local Sovereign AI Studio on NVIDIA RTX 5090
-  const [isHybrid, setIsHybrid] = useState<boolean>(() => {
-    const saved = localStorage.getItem('strata_hybrid_mode');
-    return saved !== null ? saved === 'true' : false;
-  });
+  const [providerConfig, setProviderConfig] = useState<ProviderConfig>({ activeProvider: 'ollama' });
 
-  const [hybridTier, setHybridTier] = useState<HybridTier>(() => {
-    const saved = localStorage.getItem('strata_hybrid_tier') as HybridTier;
-    return (saved === 'low' || saved === 'medium' || saved === 'high') ? saved : 'medium';
-  });
+  useEffect(() => {
+    // The dual-brain mode is gone (2026-09-21): drop what an older build saved for it.
+    localStorage.removeItem('strata_hybrid_mode');
+    localStorage.removeItem('strata_hybrid_tier');
+    if (api?.getProviderConfig) {
+      api.getProviderConfig().then((cfg: any) => {
+        if (cfg) setProviderConfig(cfg);
+      });
+    }
+  }, [api]);
 
-  const [providerConfig, setProviderConfig] = useState<ProviderConfig>({
-    activeProvider: 'ollama',
-    hybridMode: false,
-    hybridTier: 'high',
-    hybridArchitectModel: 'local'
-  });
-
-  const handleSelectArchitectModel = useEventCallback((modelId: string) => {
+  // Keep ProviderConfig synced with the two model slots.
+  useEffect(() => {
     setProviderConfig(prev => {
       const updated: ProviderConfig = {
         ...prev,
-        hybridArchitectModel: modelId,
-        generalModel: modelId,
+        codingModel: codingModel,
+        generalModel: generalModel,
         activeProvider: 'ollama'
       };
       api?.saveProviderConfig?.(updated);
       return updated;
     });
-    setMessages(prev => [
-      ...prev,
-      {
-        id: `sys_${Date.now()}`,
-        role: 'assistant',
-        content: `🧠 **Local Dual-Brain Architecture**: Switched active architect model to **${modelId}** (100% Local GPU)!`,
-        timestamp: new Date().toLocaleTimeString()
-      }
-    ]);
-  });
-
-  const handleToggleHybrid = useEventCallback(() => {
-    setIsHybrid(prev => {
-      const next = !prev;
-      localStorage.setItem('strata_hybrid_mode', String(next));
-      const updated: ProviderConfig = {
-        ...providerConfig,
-        hybridMode: next,
-        activeProvider: next ? 'hybrid' : 'ollama'
-      };
-      setProviderConfig(updated);
-      api?.saveProviderConfig?.(updated);
-      return next;
-    });
-  });
-
-  const handleSelectHybridTier = useEventCallback((tier: HybridTier) => {
-    setHybridTier(tier);
-    localStorage.setItem('strata_hybrid_tier', tier);
-    const updated: ProviderConfig = {
-      ...providerConfig,
-      hybridTier: tier
-    };
-    setProviderConfig(updated);
-    api?.saveProviderConfig?.(updated);
-  });
-
-  useEffect(() => {
-    if (api?.getProviderConfig) {
-      api.getProviderConfig().then((cfg: any) => {
-        if (cfg) {
-          setProviderConfig(cfg);
-          if (cfg.hybridMode !== undefined) {
-            setIsHybrid(cfg.hybridMode);
-            localStorage.setItem('strata_hybrid_mode', String(cfg.hybridMode));
-          }
-          if (cfg.hybridTier) {
-            setHybridTier(cfg.hybridTier);
-          }
-        }
-      });
-    }
-  }, [api]);
-
-  // Keep ProviderConfig synced with isHybrid, hybridTier, codingModel, generalModel
-  useEffect(() => {
-    setProviderConfig(prev => {
-      const updated: ProviderConfig = {
-        ...prev,
-        hybridMode: isHybrid,
-        hybridTier: hybridTier,
-        codingModel: codingModel,
-        generalModel: generalModel,
-        activeProvider: isHybrid ? 'hybrid' : 'ollama'
-      };
-      api?.saveProviderConfig?.(updated);
-      return updated;
-    });
-  }, [isHybrid, hybridTier, codingModel, generalModel, api]);
+  }, [codingModel, generalModel, api]);
 
   // Chat and Agent
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [status, setStatus] = useState<{ state: string; turn?: number }>({ state: 'idle' });
   const [pendingApproval, setPendingApproval] = useState<ToolCallItem | null>(null);
-  const [collaborateStep, setCollaborateStep] = useState<CollaborateStepData | null>(null);
+  const [engineStep, setEngineStep] = useState<EngineStepData | null>(null);
 
   const isBusy = status.state !== 'idle' && status.state !== 'stopped';
 
@@ -612,14 +538,8 @@ export const App: React.FC = () => {
       }
     });
 
-    const unsubCollaborate = api?.onAgentCollaborateStep?.((step: CollaborateStepData) => {
-      setCollaborateStep(step);
-    });
-
-    const unsubHybridDisabled = api?.onHybridDisabled?.((data: any) => {
-      console.warn('Hybrid mode disabled by agent:', data);
-      setIsHybrid(false);
-      localStorage.setItem('strata_hybrid_mode', 'false');
+    const unsubStep = api?.onAgentStep?.((step: EngineStepData) => {
+      setEngineStep(step);
     });
 
     return () => {
@@ -631,8 +551,7 @@ export const App: React.FC = () => {
       unsubToolStart?.();
       unsubToolFinish?.();
       unsubPull?.();
-      unsubCollaborate?.();
-      unsubHybridDisabled?.();
+      unsubStep?.();
     };
   }, [refreshModels]);
 
@@ -761,7 +680,7 @@ export const App: React.FC = () => {
     }
     setMessages([]);
     setPendingApproval(null);
-    setCollaborateStep(null);
+    setEngineStep(null);
     setStatus({ state: 'idle' });
   });
 
@@ -809,8 +728,6 @@ export const App: React.FC = () => {
   const closeAbout = useEventCallback(() => setIsAboutOpen(false));
   const openModelManager = useEventCallback(() => setIsModelManagerOpen(true));
   const closeModelManager = useEventCallback(() => setIsModelManagerOpen(false));
-  const openDualBrain = useEventCallback(() => setIsDualBrainModalOpen(true));
-  const closeDualBrain = useEventCallback(() => setIsDualBrainModalOpen(false));
   const toggleEditor = useEventCallback(() => setIsEditorOpen((v: boolean) => !v));
   const closeEditor = useEventCallback(() => setIsEditorOpen(false));
   const toggleTerminal = useEventCallback(() => setIsTerminalOpen((v: boolean) => !v));
@@ -882,14 +799,8 @@ export const App: React.FC = () => {
         onCloseActiveTab={closeActiveTab}
         onRefreshFiles={refreshFiles}
         activeFile={activeFile}
-        isHybrid={isHybrid}
-        onToggleHybrid={handleToggleHybrid}
-        hybridTier={hybridTier}
-        onSelectHybridTier={handleSelectHybridTier}
         codingModel={codingModel}
         generalModel={generalModel}
-        architectModel={providerConfig.hybridArchitectModel || generalModel || 'qwen3.8:27b'}
-        onOpenDualBrainModal={openDualBrain}
       />
 
       <div className="flex-1 flex overflow-hidden relative">
@@ -963,19 +874,12 @@ export const App: React.FC = () => {
           onOpenDiff={handleOpenDiff}
           activeFile={activeFile}
           openTabs={tabs.map(t => ({ path: t.path, name: t.name }))}
-          collaborateStep={collaborateStep}
+          engineStep={engineStep}
           onOpenModelManager={openModelManager}
-          isHybrid={isHybrid}
-          onToggleHybrid={handleToggleHybrid}
-          hybridTier={hybridTier}
-          onSelectHybridTier={handleSelectHybridTier}
           autoMode={autoMode}
           onToggleAutoMode={handleToggleAutoMode}
           codingModel={codingModel}
           generalModel={generalModel}
-          architectModel={providerConfig.hybridArchitectModel || generalModel || 'qwen3.8:27b'}
-          onOpenDualBrainModal={openDualBrain}
-          onSelectArchitectModel={handleSelectArchitectModel}
         />
       </div>
 
@@ -989,7 +893,7 @@ export const App: React.FC = () => {
 
       <StatusBar workspace={workspace} />
 
-      {/* Integrated Interactive Terminal / PowerShell Console Drawer */}
+      {/* Integrated Interactive Terminal (PowerShell on Windows, zsh/bash on macOS) Drawer */}
       <TerminalDrawer
         isOpen={isTerminalOpen}
         onClose={closeTerminal}
@@ -1010,9 +914,6 @@ export const App: React.FC = () => {
         onClose={closeAbout}
         selectedModel={activeModel}
         systemInfo={systemInfo}
-        isHybrid={isHybrid}
-        hybridTier={hybridTier}
-        architectModel={providerConfig.hybridArchitectModel || generalModel || 'qwen3.8:27b'}
       />
 
       <ModelManagerModal
@@ -1042,16 +943,6 @@ export const App: React.FC = () => {
         onClearPullProgress={clearPullProgress}
       />
 
-      <DualBrainModal
-        isOpen={isDualBrainModalOpen}
-        onClose={closeDualBrain}
-        activeArchitectModel={providerConfig.hybridArchitectModel || generalModel || 'qwen3.8:27b'}
-        onSelectArchitectModel={handleSelectArchitectModel}
-        activeLocalModel={activeModel}
-        onSelectLocalModel={handleSelectModel}
-        installedLocalModels={models}
-        isHybrid={isHybrid}
-      />
     </div>
   );
 };

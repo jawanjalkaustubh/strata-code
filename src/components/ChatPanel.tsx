@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   Send, Square, Sparkles, CheckCircle2, AlertCircle, Wrench, ShieldAlert, Shield, Check, X, Loader2, BrainCircuit, Columns, PanelRightClose, Code2, MessageSquare, Cpu, Copy, RotateCcw, GitCompare, FileCode, Paperclip, Gauge, HardDrive, Zap, ExternalLink, Plus, Image as ImageIcon
 } from 'lucide-react';
-import { ChatMessage, ToolCallItem, TaskMode, FileNode, SystemInfo, CollaborateStepData, HybridTier } from '../types';
+import { ChatMessage, ToolCallItem, TaskMode, FileNode, SystemInfo, EngineStepData } from '../types';
 import { STRATA_ICON } from '../assets/logo';
 import { ActivityInspector, LiveActivityItem } from './ActivityInspector';
 
@@ -25,19 +25,12 @@ interface ChatPanelProps {
   onOpenDiff?: (diff: { path: string; oldContent: string; newContent: string }) => void;
   activeFile?: string | null;
   openTabs?: { path: string; name: string }[];
-  collaborateStep?: CollaborateStepData | null;
+  engineStep?: EngineStepData | null;
   onOpenModelManager?: () => void;
-  isHybrid?: boolean;
-  onToggleHybrid?: () => void;
-  hybridTier?: HybridTier;
-  onSelectHybridTier?: (tier: HybridTier) => void;
   autoMode?: boolean;
   onToggleAutoMode?: () => void;
   codingModel?: string;
   generalModel?: string;
-  architectModel?: string;
-  onOpenDualBrainModal?: () => void;
-  onSelectArchitectModel?: (modelId: string) => void;
 }
 
 const CodeBlock: React.FC<{ code: string; language?: string }> = ({ code, language }) => {
@@ -151,28 +144,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   onOpenDiff,
   activeFile,
   openTabs,
-  collaborateStep,
+  engineStep,
   onOpenModelManager,
-  isHybrid = false,
-  onToggleHybrid,
-  hybridTier = 'medium',
-  onSelectHybridTier,
   autoMode = true,
   onToggleAutoMode,
   codingModel = 'qwen2.5-coder:32b',
   generalModel = 'qwen3.8:27b',
-  architectModel = 'qwen3.8:27b',
-  onOpenDualBrainModal,
-  onSelectArchitectModel
 }) => {
-  const openModelConfig = onOpenDualBrainModal;
   const [input, setInput] = useState('');
   const [elapsed, setElapsed] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Slash Commands (/model, /clear, /hybrid)
+  // Slash Commands (/model, /clear)
   const [showSlashCommands, setShowSlashCommands] = useState(false);
   const [slashQuery, setSlashQuery] = useState('');
   const [slashIndex, setSlashIndex] = useState(0);
@@ -181,22 +166,16 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     {
       cmd: '/model',
       label: '/model',
-      desc: 'Configure Local Dual-Brain Architecture Models (Architect + Coder)',
-      action: () => openModelConfig?.()
+      desc: 'Open the model manager: download, update and pick local models',
+      action: () => onOpenModelManager?.()
     },
     {
       cmd: '/clear',
       label: '/clear',
       desc: 'Clear conversation history & reset context',
       action: () => onNewChat?.()
-    },
-    {
-      cmd: '/hybrid',
-      label: '/hybrid',
-      desc: 'Toggle Local Dual-Brain Mode (Architect + Coder Worker on RTX 5090)',
-      action: () => onToggleHybrid?.()
     }
-  ], [openModelConfig, onNewChat, onToggleHybrid]);
+  ], [onOpenModelManager, onNewChat]);
 
   const filteredSlashCommands = useMemo(() => {
     if (!showSlashCommands) return [];
@@ -394,10 +373,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       .slice(0, 8);
   }, [flattenedFiles, showFileSuggestions, fileQuery]);
 
-  // Aggregate token tracking for Hybrid vs Local display
+  // Local token count for the status strip
   const localTokensTotal = useMemo(() => {
-    if (collaborateStep && collaborateStep.localTokens > 0) {
-      return collaborateStep.localTokens;
+    if (engineStep && engineStep.localTokens > 0) {
+      return engineStep.localTokens;
     }
     let count = 0;
     for (const m of messages) {
@@ -406,7 +385,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       }
     }
     return count;
-  }, [collaborateStep, messages]);
+  }, [engineStep, messages]);
 
 
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -514,19 +493,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       const arg = parts.slice(1).join(' ').trim();
 
       if (command === '/model') {
-        if (!arg) {
-          openModelConfig?.();
-        } else {
-          onSelectArchitectModel?.(arg);
-        }
+        onOpenModelManager?.();
         setInput('');
         return;
       } else if (command === '/clear') {
         onNewChat?.();
-        setInput('');
-        return;
-      } else if (command === '/hybrid') {
-        onToggleHybrid?.();
         setInput('');
         return;
       }
@@ -624,58 +595,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         </div>
       </div>
 
-      {/* Combined Local Dual-Brain Command Strip */}
-      {isHybrid ? (
-        <div className="px-2.5 py-1.5 bg-gradient-to-r from-role-architect-950/50 via-[#131024] to-role-worker-950/40 border-b border-role-architect-500/40 flex flex-wrap items-center justify-between gap-1.5 text-micro select-none flex-shrink-0">
-          <div className="flex items-center space-x-1.5 flex-wrap gap-y-1">
-            <span className="px-2 py-0.5 rounded-full text-micro font-mono bg-role-architect-500/20 text-role-architect-300 border border-role-architect-500/40 font-bold flex items-center space-x-1">
-              <Cpu size={10} className="text-role-tool-300" />
-              <span>DUAL-BRAIN ACTIVE</span>
-            </span>
-
-            {/* General Architect Model */}
-            <button
-              onClick={openModelConfig}
-              className="flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full bg-role-architect-500/20 hover:bg-role-architect-500/35 border border-role-architect-500/40 hover:border-role-architect-400 text-role-architect-200 font-mono text-micro flex-shrink-0 transition cursor-pointer shadow-sm"
-              title="Configure Local Dual-Brain Architecture (General Model + Coder Model)"
-            >
-              <span className="w-1.5 h-1.5 rounded-full bg-role-architect-400 animate-pulse" />
-              <span>Architect: <strong className="text-white">{architectModel || 'qwen3.8:27b'}</strong></span>
-              <span className="text-micro text-role-architect-300">▾</span>
-            </button>
-
-            <span className="text-role-worker-400 font-bold text-xs flex-shrink-0">➔</span>
-
-            {/* Coder Worker Model */}
-            <div className="flex items-center space-x-1 px-2 py-0.5 rounded-full bg-state-ok-500/20 border border-state-ok-500/40 text-state-ok-200 font-mono text-micro flex-shrink-0" title="Local Sovereign Worker on NVIDIA RTX 5090">
-              <span className="w-1.5 h-1.5 rounded-full bg-state-ok-400" />
-              <span>Coder Worker: <strong className="text-white">{activeModel || 'Qwen3-Coder-30B'}</strong> (237 tok/s)</span>
-            </div>
-          </div>
-
-          <div className="flex items-center space-x-1.5 flex-shrink-0 ml-auto text-micro font-mono text-slate-400">
-            <span className="text-state-ok-400 font-bold">100% OFFLINE</span>
-            <span>•</span>
-            <span>$0.00 COST</span>
-          </div>
+      {/* Mode strip: everything runs on the local GPU */}
+      <div className="px-2.5 py-1 bg-studio-panel/50 border-b border-studio-border flex items-center justify-between text-micro select-none flex-shrink-0">
+        <div className="flex items-center space-x-2 text-slate-400 font-mono text-micro">
+          <HardDrive size={11} className="text-state-ok-400" />
+          <span>Local Mode (Local GPU • {activeModel})</span>
         </div>
-      ) : (
-        <div className="px-2.5 py-1 bg-studio-panel/50 border-b border-studio-border flex items-center justify-between text-micro select-none flex-shrink-0">
-          <div className="flex items-center space-x-2 text-slate-400 font-mono text-micro">
-            <HardDrive size={11} className="text-state-ok-400" />
-            <span>Pure Local Mode (RTX 5090 • {activeModel})</span>
-          </div>
-          {onToggleHybrid && (
-            <button
-              onClick={onToggleHybrid}
-              className="text-micro text-role-user-400 hover:text-role-user-300 flex items-center space-x-1 cursor-pointer"
-            >
-              <Zap size={10} className="text-role-tool-300" />
-              <span>Switch to Hybrid Mode</span>
-            </button>
-          )}
-        </div>
-      )}
+      </div>
 
       {/* Messages list */}
       <div 
@@ -785,27 +711,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 <span className="font-semibold text-slate-300 flex items-center space-x-1.5">
                   {msg.role === 'user' ? (
                     <span>You</span>
-                  ) : msg.senderModelType === 'online' || msg.senderRole === 'architect' ? (
-                    <div className="flex items-center space-x-1.5">
-                      <div className="w-4 h-4 rounded-control bg-role-architect-500/25 border border-role-architect-500/50 flex items-center justify-center">
-                        <Cpu size={11} className="text-role-architect-300" />
-                      </div>
-                      <span className="text-role-architect-300 font-bold font-mono">
-                        {msg.senderName || 'Local Architect (Brain 1 • General Model)'}
-                      </span>
-                      {msg.addressedTo && (
-                        <span className="text-micro px-1.5 py-0.5 rounded-control bg-role-architect-500/20 text-role-architect-200 border border-role-architect-500/30 font-sans">
-                          ➔ {msg.addressedTo}
-                        </span>
-                      )}
-                    </div>
                   ) : msg.senderModelType === 'offline' || msg.senderRole === 'worker' ? (
                     <div className="flex items-center space-x-1.5">
                       <div className="w-4 h-4 rounded-control bg-state-ok-500/25 border border-state-ok-500/50 flex items-center justify-center">
                         <Zap size={11} className="text-state-ok-300" />
                       </div>
                       <span className="text-state-ok-300 font-bold font-mono">
-                        {msg.senderName || 'Local Coder Worker (Brain 2 • RTX 5090)'}
+                        {msg.senderName || 'Local Model (Local GPU)'}
                       </span>
                       {msg.addressedTo && (
                         <span className="text-micro px-1.5 py-0.5 rounded-control bg-state-ok-500/20 text-state-ok-200 border border-state-ok-500/30 font-sans">
@@ -817,17 +729,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                     <>
                       <img src={STRATA_ICON} alt="Strata" className="w-3.5 h-3.5 object-contain inline-block" />
                       <span>Strata Assistant</span>
-                      {msg.model?.includes('Architect') ? (
-                        <span className="inline-flex items-center space-x-1 text-micro px-2 py-0.5 rounded-control bg-role-architect-500/15 border border-role-architect-500/30 text-role-architect-300 font-mono font-medium shadow-sm">
-                          <Cpu size={10} className="text-role-architect-400" />
-                          <span>{msg.model}</span>
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center space-x-1 text-micro px-1.5 py-0.5 rounded bg-studio-bg border border-studio-border text-state-ok-400/90 font-mono">
-                          <HardDrive size={10} className="text-state-ok-400" />
-                          <span>{msg.model || activeModel}</span>
-                        </span>
-                      )}
+                      <span className="inline-flex items-center space-x-1 text-micro px-1.5 py-0.5 rounded bg-studio-bg border border-studio-border text-state-ok-400/90 font-mono">
+                        <HardDrive size={10} className="text-state-ok-400" />
+                        <span>{msg.model || activeModel}</span>
+                      </span>
                     </>
                   )}
                 </span>
@@ -1048,33 +953,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             </div>
 
             <div className="flex items-center space-x-2 font-mono text-micro text-slate-400 truncate">
-              {isHybrid ? (
-                /* Local Dual-Brain Mode: Architect + Coder on RTX 5090 (Pure Local, 0 Cloud Tokens) */
-                <div 
-                  className="flex items-center space-x-1.5 px-2 py-0.5 rounded bg-role-architect-950/40 border border-role-architect-500/30 text-micro font-mono shadow-sm select-none"
-                  title="Local Dual-Brain Architecture: Brain 1 (General Architect) + Brain 2 (Coder Worker) on RTX 5090 ($0.00 Cost)"
-                >
-                  <span className="px-1.5 py-0.5 rounded bg-role-architect-500/25 text-role-architect-300 font-bold uppercase text-micro border border-role-architect-500/40 tracking-wider">
-                    DUAL-BRAIN • {hybridTier}
-                  </span>
-                  <span className="text-role-architect-300 font-medium">🧠 Architect: {architectModel || 'qwen3.8:27b'}</span>
-                  <span className="text-slate-600">•</span>
-                  <span className="text-state-ok-300 font-medium">⚡ Local Coder: {localTokensTotal.toLocaleString()} tok</span>
-                  <span className="text-slate-600">•</span>
-                  <span className="text-role-tool-300 font-bold">100% OFFLINE ($0.00)</span>
-                </div>
-              ) : (
-                /* Pure Local Mode: ONLY Local Tokens */
-                /* Local Single Mode: ONLY Local Tokens */
-                <div 
-                  className="flex items-center space-x-1.5 px-2 py-0.5 rounded bg-state-ok-950/40 border border-state-ok-500/30 text-state-ok-300 text-micro font-mono shadow-sm select-none"
-                  title="Pure Local Sovereign Mode: 100% GPU Execution on RTX 5090 (Zero Cloud Tokens)"
-                >
-                  <HardDrive size={10} className="text-state-ok-400" />
-                  <span className="font-medium">⚡ Local Tokens: {localTokensTotal.toLocaleString()} tok</span>
-                  <span className="text-state-ok-400/60 font-semibold">(RTX 5090)</span>
-                </div>
-              )}
+              <div 
+                className="flex items-center space-x-1.5 px-2 py-0.5 rounded bg-state-ok-950/40 border border-state-ok-500/30 text-state-ok-300 text-micro font-mono shadow-sm select-none"
+                title="Local mode: 100% local GPU execution (zero cloud tokens)"
+              >
+                <HardDrive size={10} className="text-state-ok-400" />
+                <span className="font-medium">⚡ Local Tokens: {localTokensTotal.toLocaleString()} tok</span>
+                <span className="text-state-ok-400/60 font-semibold">(Local GPU)</span>
+              </div>
 
               <div className="flex items-center space-x-1 truncate max-w-[150px]">
                 <Cpu size={11} className={taskMode === 'coding' ? 'text-role-user-400' : 'text-role-architect-400'} />
@@ -1110,48 +996,27 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             </div>
           )}
 
-          {/* Real-Time Live Collaboration Bar: Hybrid vs Local Single */}
-          {collaborateStep && (
-            <div className={`mb-2 p-2.5 rounded-card border text-xs shadow-lg animate-in fade-in select-none ${
-              isHybrid
-                ? 'bg-gradient-to-r from-state-info-950/50 via-role-worker-950/40 to-slate-900/90 border-role-worker-500/40'
-                : 'bg-studio-panel/90 border-state-ok-500/30'
-            }`}>
+          {/* Engine activity strip: the current step and the local token count */}
+          {engineStep && (
+            <div className="mb-2 p-2.5 rounded-card border text-xs shadow-lg animate-in fade-in select-none bg-studio-panel/90 border-state-ok-500/30">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center space-x-2 truncate">
-                  {isHybrid && collaborateStep.activeRole === 'architect' ? (
-                    <div className="flex items-center space-x-1.5 text-state-info-300 font-semibold font-mono text-micro">
-                      <span className="relative flex h-2.5 w-2.5 flex-shrink-0">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-state-info-400 opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-state-info-500"></span>
-                      </span>
-                      <Cpu size={13} className="text-role-architect-400 flex-shrink-0" />
-                      <span className="truncate">Local Architect ({collaborateStep.architectModel || 'qwen3.8:27b'}) • <span className="text-role-architect-300 font-bold uppercase text-micro">{collaborateStep.hybridTier || hybridTier}</span></span>
-                    </div>
-                  ) : (
-                    <div className="flex items-center space-x-1.5 text-state-ok-300 font-semibold font-mono text-micro">
-                      <span className="relative flex h-2.5 w-2.5 flex-shrink-0">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-state-ok-400 opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-state-ok-500"></span>
-                      </span>
-                      <HardDrive size={13} className="text-state-ok-400 flex-shrink-0" />
-                      <span className="truncate">RTX 5090 Coder ({collaborateStep.workerModel || activeModel})</span>
-                    </div>
-                  )}
-
+                  <div className="flex items-center space-x-1.5 text-state-ok-300 font-semibold font-mono text-micro">
+                    <span className="relative flex h-2.5 w-2.5 flex-shrink-0">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-state-ok-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-state-ok-500"></span>
+                    </span>
+                    <HardDrive size={13} className="text-state-ok-400 flex-shrink-0" />
+                    <span className="truncate">Local Model ({engineStep.workerModel || activeModel})</span>
+                  </div>
                   <span className="text-slate-600 hidden sm:inline">•</span>
                   <span className="text-micro text-slate-300 font-sans truncate hidden sm:inline">
-                    {collaborateStep.title || collaborateStep.message}
+                    {engineStep.title || engineStep.message}
                   </span>
                 </div>
-
-                {/* Real-Time Local Execution Metrics */}
                 <div className="flex items-center space-x-1.5 font-mono text-micro flex-shrink-0 ml-auto">
-                  <span className="px-2 py-0.5 rounded bg-state-ok-900/40 text-state-ok-300 border border-state-ok-500/30 font-medium" title="Local Tokens Executed on RTX 5090">
-                    ⚡ Local: {collaborateStep.localTokens.toLocaleString()} tok (100% GPU)
-                  </span>
-                  <span className="px-2 py-0.5 rounded bg-role-architect-500/15 text-role-architect-300 border border-role-architect-500/30 font-bold" title="100% Sovereign Offline Execution">
-                    🛡️ 100% Offline • $0.00
+                  <span className="px-2 py-0.5 rounded bg-state-ok-900/40 text-state-ok-300 border border-state-ok-500/30 font-medium" title="Local tokens executed on your GPU">
+                    ⚡ Local: {engineStep.localTokens.toLocaleString()} tok (100% GPU)
                   </span>
                 </div>
               </div>

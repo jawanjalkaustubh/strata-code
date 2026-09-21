@@ -6,9 +6,11 @@ import { ChildProcess, execFile } from 'child_process';
  * tree-killed on its own timeout, on user Stop and at quit.
  *
  * Node's `timeout` option and `child.kill()` only reach the DIRECT child
- * (powershell.exe); whatever it started (node, python, a dev server) lived on.
- * `taskkill /PID <pid> /T /F` takes the whole tree, asynchronously so the quit
- * path never blocks the event loop.
+ * (powershell.exe / the shell); whatever it started (node, python, a dev
+ * server) lived on. On Windows `taskkill /PID <pid> /T /F` takes the whole
+ * tree; on macOS and Linux the tree is walked with `pgrep -P` and every pid
+ * gets SIGKILL, children first. Both asynchronous so the quit path never
+ * blocks the event loop.
  */
 export type ChildKind = 'tool' | 'terminal' | 'coder';
 
@@ -39,9 +41,12 @@ export function killTree(pid: number | undefined | null, boundMs = 3000): Promis
           finish();
         });
       } else {
-        try { process.kill(pid, 'SIGKILL'); } catch {}
-        clearTimeout(timer);
-        finish();
+        collectTree(pid, Math.max(250, boundMs - 500)).then((pids) => {
+          // Deepest descendants first, then the root; every kill is best-effort.
+          for (const p of pids.reverse()) { try { process.kill(p, 'SIGKILL'); } catch {} }
+          clearTimeout(timer);
+          finish();
+        });
       }
     } catch {
       clearTimeout(timer);
@@ -64,4 +69,34 @@ export async function killTrackedChildren(kind?: ChildKind, boundMs = 3000): Pro
     liveChildren.delete(t);
   }));
   return pids;
+}
+
+/**
+ * POSIX: `pid` followed by every descendant, breadth-first, via `pgrep -P`.
+ * Falls back to just `pid` when pgrep is missing or the walk exceeds `boundMs`.
+ */
+function collectTree(pid: number, boundMs: number): Promise<number[]> {
+  const deadline = Date.now() + boundMs;
+  const out: number[] = [pid];
+  const children = (parent: number): Promise<number[]> => new Promise((resolve) => {
+    if (Date.now() > deadline) return resolve([]);
+    try {
+      execFile('pgrep', ['-P', String(parent)], { timeout: 1000 }, (_err, stdout) => {
+        resolve(String(stdout || '').split(/\s+/).map(v => parseInt(v, 10)).filter(v => Number.isFinite(v) && v > 0));
+      });
+    } catch {
+      resolve([]);
+    }
+  });
+  return (async () => {
+    let frontier = [pid];
+    while (frontier.length && Date.now() < deadline) {
+      const next: number[] = [];
+      for (const p of frontier) {
+        for (const c of await children(p)) if (!out.includes(c)) { out.push(c); next.push(c); }
+      }
+      frontier = next;
+    }
+    return out;
+  })();
 }

@@ -1,9 +1,11 @@
 # Strata Code
 
-A free, local, offline AI coding studio for Windows. Two models on one NVIDIA GPU:
-a **coder** (Qwen3-Coder-30B-A3B, served by a bundled llama.cpp) that reads,
-edits and verifies code, and a **general** model (Qwen 3.8 27B via Ollama)
-that plans and reviews. Nothing leaves your machine. No accounts, no keys.
+A free, local, offline AI coding studio for Windows (and, from source, Apple
+Silicon Macs - see `MACOS.md` in the repository). Two local models to choose
+from, one per turn: a **coder** (Qwen3-Coder-30B-A3B, served by a bundled
+llama.cpp) that reads, edits and verifies code, and a **general** model
+(Qwen 3.8 27B via Ollama) for everything else. Nothing leaves your machine.
+No accounts, no keys.
 
 ## Requirements
 
@@ -16,7 +18,7 @@ that plans and reviews. Nothing leaves your machine. No accounts, no keys.
 | Disk | 30 GB where you extract + 20 GB on your user drive | SSD |
 | Network | ~45 GB of downloads, once | |
 
-Not supported: AMD/Intel GPUs, macOS, Linux (this build only).
+Not supported by this build: AMD/Intel GPUs, Linux. macOS (Apple Silicon) is a source install: see `MACOS.md` in the repository.
 
 ## Agreement
 
@@ -55,17 +57,17 @@ partial downloads.
   1. `what model is this` → answered instantly by the engine
   2. `Inspect the workspace files and suggest code improvements` → analysis
      in chat, no files touched
-  3. `Add a function X to file Y and make sure it typechecks` → a plan,
-     edits, a verification run, and an architect review
+  3. `Add a function X to file Y and make sure it typechecks` → edits, then
+     the project's own verification run (typecheck / build) before it stops
 
 ## What to look at
 
 - **Status bar**: coder up/loading/blocked, VRAM used/free, what Ollama
   holds. If another app has a model in Ollama, the coder shows **blocked**
   with a **Free GPU** button.
-- **Hybrid vs Local** toggle in the title bar. Hybrid adds a planning and a
-  review pass by the general model. Both models cannot be resident at once on
-  a 32 GB card; the app routes around that and tells you when it does.
+- **Model picker** in the title bar: the coder for code, the general model
+  for questions and prose. One model runs per turn; both cannot be resident
+  at once on a 32 GB card, so switching reloads (the status bar shows it).
 - **Auto vs Review** mode next to the prompt box. Review asks before every
   file change.
 

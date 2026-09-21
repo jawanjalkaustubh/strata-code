@@ -24,7 +24,7 @@ export interface ChatMessage {
   tools?: ToolCallItem[];
   timestamp: string;
   senderModelType?: 'online' | 'offline' | 'user';
-  senderRole?: 'architect' | 'worker' | 'user';
+  senderRole?: 'worker' | 'user';
   senderName?: string;
   addressedTo?: string;
   images?: string[];
@@ -94,7 +94,7 @@ export interface TerminalHistoryItem {
   timestamp: string;
 }
 
-export type ModelProvider = 'ollama' | 'local' | 'hybrid';
+export type ModelProvider = 'ollama' | 'local';
 
 export interface ModelUsageStats {
   requests: number;
@@ -104,27 +104,17 @@ export interface ModelUsageStats {
   lastUsed?: string;
 }
 
-export type HybridTier = 'low' | 'medium' | 'high';
-
-export interface CollaborateStepData {
-  stage: 'plan' | 'executing' | 'escalate' | 'verified' | 'fallback';
-  architectModel: string;
+/** One line of the engine's activity strip: what the run is doing and on which model. */
+export interface EngineStepData {
+  stage: 'executing' | 'verified';
   workerModel: string;
-  activeRole: 'architect' | 'worker';
   title?: string;
   message: string;
-  cloudTokens?: number;
   localTokens: number;
-  quotaSavedPercent?: number;
-  hybridTier?: HybridTier;
 }
 
 export interface ProviderConfig {
   activeProvider: ModelProvider;
-  hybridMode?: boolean;
-  hybridTier?: HybridTier;
-  hybridArchitectModel?: string;
-  hybridWorkerModel?: string;
   ollamaModel?: string;
   codingModel?: string;
   generalModel?: string;
@@ -135,10 +125,6 @@ export interface ProviderConfig {
   allowPaidApis?: boolean;
   /** Run the project's typecheck/test after the worker edits files and feed failures back. Default true. */
   verificationGate?: boolean;
-  /** Let a thinking-capable Ollama architect think: 'auto' = high tier + stall re-plans (default). */
-  architectThinking?: 'off' | 'auto' | 'on';
-  /** How many times the architect may send the worker back after review. Default 1. */
-  maxReviewRounds?: number;
 }
 
 export interface LiveActivityItem {

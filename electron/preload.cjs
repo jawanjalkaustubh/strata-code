@@ -1,6 +1,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
+  // 'win32' | 'darwin' | 'linux' - the renderer picks shell labels and shortcut hints from it.
+  platform: process.platform,
   // Window controls
   minimize: () => ipcRenderer.send('window:minimize'),
   maximize: () => ipcRenderer.send('window:maximize'),
@@ -91,13 +93,13 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('agent:thought', handler);
     return () => ipcRenderer.removeListener('agent:thought', handler);
   },
-  onAgentCollaborateStep: (callback) => {
+  onAgentStep: (callback) => {
     const handler = (_e, data) => callback(data);
-    ipcRenderer.on('agent:collaborate-step', handler);
-    return () => ipcRenderer.removeListener('agent:collaborate-step', handler);
+    ipcRenderer.on('agent:step', handler);
+    return () => ipcRenderer.removeListener('agent:step', handler);
   },
 
-  // Local Dual-Brain Provider Config (Ollama & llama-server)
+  // Provider config and the local engines (Ollama & llama-server)
   getEngineStatus: (force) => ipcRenderer.invoke('engine:status', !!force),
   // Explicit, user-initiated: unload every Ollama model (including another
   // app's) and start the coder server. Never called automatically.
@@ -118,10 +120,5 @@ contextBridge.exposeInMainWorld('api', {
     const handler = (_e, meta) => callback(meta);
     ipcRenderer.on('agent:message-start', handler);
     return () => ipcRenderer.removeListener('agent:message-start', handler);
-  },
-  onHybridDisabled: (callback) => {
-    const handler = (_e, data) => callback(data);
-    ipcRenderer.on('hybrid:disabled', handler);
-    return () => ipcRenderer.removeListener('hybrid:disabled', handler);
   }
 });

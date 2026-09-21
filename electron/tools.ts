@@ -630,10 +630,16 @@ export class ToolExecutor {
       // only TerminateProcess'd powershell.exe, so an `npm run dev` it had
       // started kept running (and the "[TIMEOUT] ... was terminated" text was
       // a lie for everything below the shell).
+      // macOS / Linux: the user's login shell (zsh on macOS) with `-c`; PATH was
+      // merged from the login shell at startup (paths.ensureUnixPath), so
+      // Homebrew's node/npm/python3 resolve without `-l` on every call.
+      const [shellExe, shellArgs] = process.platform === 'win32'
+        ? ['powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', utf8Prefix + command]]
+        : [process.env.SHELL || '/bin/bash', ['-c', command]];
       let timedOut = false;
       const child = execFile(
-        'powershell.exe',
-        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', utf8Prefix + command],
+        shellExe,
+        shellArgs,
         {
           cwd: this.workspaceDir,
           maxBuffer: 10 * 1024 * 1024, // 10MB buffer
@@ -670,6 +676,11 @@ export class ToolExecutor {
     });
   }
 }
+
+/** What run_command is told it runs in: PowerShell on Windows, the login shell (zsh/bash) elsewhere. */
+export const SHELL_NAME = process.platform === 'win32' ? 'PowerShell' : 'shell (zsh/bash)';
+/** The Python launcher on this platform: `python` on Windows, `python3` on macOS/Linux. */
+export const PYTHON = process.platform === 'win32' ? 'python' : 'python3';
 
 export const OLLAMA_TOOLS = [
   {
@@ -754,11 +765,11 @@ export const OLLAMA_TOOLS = [
     type: 'function',
     function: {
       name: 'run_command',
-      description: 'Execute a PowerShell command in the workspace directory (e.g. "npm run typecheck", "git status", "python -m pytest -q"). Use it to verify your changes compile and tests pass. Non-interactive; 60s limit.',
+      description: `Execute a ${SHELL_NAME} command in the workspace directory (e.g. "npm run typecheck", "git status", "${PYTHON} -m pytest -q"). Use it to verify your changes compile and tests pass. Non-interactive; 60s limit.`,
       parameters: {
         type: 'object',
         properties: {
-          command: { type: 'string', description: 'PowerShell command line to execute' }
+          command: { type: 'string', description: `${SHELL_NAME} command line to execute` }
         },
         required: ['command']
       }

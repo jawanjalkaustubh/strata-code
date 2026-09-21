@@ -209,7 +209,7 @@ export function chooseVerifyCommands(profile: ProjectProfile, changedFiles: stri
   if (js.length && !(profile.kind === 'node' && profile.typescript && ts.length === 0 && cmds.length)) {
     for (const f of js) cmds.push(`node --check ${q(f)}`);
   }
-  if (py.length) cmds.push(`python -m py_compile ${py.map(q).join(' ')}`);
+  if (py.length) cmds.push(`${process.platform === 'win32' ? 'python' : 'python3'} -m py_compile ${py.map(q).join(' ')}`);
   for (const f of json) {
     cmds.push(`node -e "JSON.parse(require('fs').readFileSync(${JSON.stringify(f)},'utf8'))"`);
   }
@@ -277,7 +277,7 @@ export function extractQueryTerms(prompt: string, extraTerms: string[] = [], max
     const isIdentifier = /[a-z][A-Z]/.test(w) || /_/.test(w) || /\d/.test(w) || /[.]/.test(w);
     if (isIdentifier) {
       bump(w, 3);
-      // Sub-words of an identifier catch near-misses: "hybridMode" also finds "hybrid".
+      // Sub-words of an identifier catch near-misses: "cacheMode" also finds "cache".
       for (const part of w.split(/(?<=[a-z0-9])(?=[A-Z])|[_.\-]/)) {
         const p = part.toLowerCase();
         if (p.length >= 4 && !STOPWORDS.has(p)) bump(p, 1);

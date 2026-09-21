@@ -14,6 +14,10 @@ const TerminalDrawerInner: React.FC<TerminalDrawerProps> = ({
   workspace
 }) => {
   const api = (window as any).api;
+  // PowerShell on Windows; the login shell (zsh) on macOS, bash on Linux.
+  const isWin = (api?.platform || 'win32') === 'win32';
+  const shellName = isWin ? 'PowerShell' : (api?.platform === 'darwin' ? 'zsh' : 'bash');
+  const promptLabel = isWin ? 'PS >' : '$';
   const [command, setCommand] = useState('');
   const [history, setHistory] = useState<TerminalHistoryItem[]>([]);
   const [commandHistory, setCommandHistory] = useState<string[]>([]);
@@ -180,14 +184,14 @@ const TerminalDrawerInner: React.FC<TerminalDrawerProps> = ({
       <div className="flex-1 p-3 overflow-y-auto font-mono text-micro space-y-2 select-text bg-[#080a0f]">
         {history.length === 0 && (
           <div className="text-slate-500 text-xs py-2 italic select-none">
-            PowerShell ready. Type any command below or click a quick action above...
+            {shellName} ready. Type any command below or click a quick action above...
           </div>
         )}
 
         {history.map(item => (
           <div key={item.id} className="space-y-1">
             <div className="flex items-center space-x-2 text-slate-400 font-semibold select-none">
-              <span className="text-role-user-400">PS &gt;</span>
+              <span className="text-role-user-400">{promptLabel}</span>
               <span className="text-slate-200">{item.command}</span>
               <span className="text-micro text-slate-400 font-normal">[{item.timestamp}]</span>
               {item.exitCode === 0 ? (
@@ -229,7 +233,7 @@ const TerminalDrawerInner: React.FC<TerminalDrawerProps> = ({
 
       {/* Interactive Command Input */}
       <div className="h-9 border-t border-studio-border bg-studio-surface/90 flex items-center px-3 space-x-2 flex-shrink-0">
-        <span className="text-role-user-400 font-mono text-xs font-bold select-none">PS &gt;</span>
+        <span className="text-role-user-400 font-mono text-xs font-bold select-none">{promptLabel}</span>
         <input
           ref={inputRef}
           type="text"

@@ -1,15 +1,15 @@
 import { ToolExecutor, OLLAMA_TOOLS } from './tools';
+import { SHELL_NAME } from './tools';
+/** The line-count idiom the model is shown for its verification step: PowerShell on Windows, the POSIX shell elsewhere (a Mac has no Get-Content). */
+const LINE_COUNT_EXAMPLE = process.platform === 'win32' ? '(Get-Content docs/x.md).Count' : 'wc -l < docs/x.md';
 import {
   buildProjectProfile, buildRetrievalBlock, chooseVerifyCommands, compactVerifyOutput,
-  outlineSource as outlineSourceText, summarizeDiff, ProjectProfile
+  summarizeDiff, ProjectProfile
 } from './grounding';
-import {
-  TaskPlan, parseBlueprint, renderChecklist, pendingTasks, applyToolOutcome, applyCompletionClaims,
-  closeTasksClaimedDone, detectCompletionClaim, detectNarratedIntent, extractEmbeddedToolCalls, parseReviewVerdict,
-  isAdvisoryRequest
-} from './plan';
+import { detectNarratedIntent, extractEmbeddedToolCalls, isAdvisoryRequest } from './plan';
 import { WebContents } from 'electron';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { execFile, spawn } from 'child_process';
 import { liveSessionPath, coderModelPath as resolveCoderModelPath } from './paths';
@@ -52,27 +52,17 @@ export interface ModelUsageStats {
   lastUsed?: string;
 }
 
-export interface CollaborateStepData {
-  stage: 'plan' | 'executing' | 'escalate' | 'verified' | 'fallback';
-  architectModel: string;
+/** One line of the engine's activity strip (pushed on 'agent:step'): what the run is doing and on which model. */
+export interface EngineStepData {
+  stage: 'executing' | 'verified';
   workerModel: string;
-  activeRole: 'architect' | 'worker';
   title?: string;
   message: string;
-  cloudTokens?: number;
   localTokens: number;
-  quotaSavedPercent?: number;
-  hybridTier?: 'low' | 'medium' | 'high';
 }
 
 export interface ProviderConfig {
-  activeProvider: 'ollama' | 'local' | 'hybrid';
-  hybridMode?: boolean;
-  hybridArchitectModel?: string;
-  hybridArchitectProvider?: ArchitectProvider;
-  allowPaidApis?: boolean;
-  hybridWorkerModel?: string;
-  hybridTier?: 'low' | 'medium' | 'high';
+  activeProvider: 'ollama' | 'local';
   ollamaModel?: string;
   codingModel?: string;
   generalModel?: string;
@@ -89,38 +79,14 @@ export interface ProviderConfig {
   localServerApiKey?: string;
   /** Run the project's typecheck/test after the worker edits files and feed failures back. Default true. */
   verificationGate?: boolean;
-  /** Let a thinking-capable Ollama architect think: 'auto' = high tier + stall re-plans (default). */
-  architectThinking?: 'off' | 'auto' | 'on';
-  /** How many times the architect may send the worker back after review. Default 1. */
-  maxReviewRounds?: number;
 }
 
-/** Local dual-brain architect provider. */
-export type ArchitectProvider = 'local';
-
-export interface ArchitectModelOption {
-  id: string;
-  name: string;
-  provider: ArchitectProvider;
-  live: boolean;
-}
-
-export type HybridBand = 'trivial' | 'moderate' | 'complex' | 'deep';
+export type TaskBand = 'trivial' | 'moderate' | 'complex' | 'deep';
 
 export interface TaskClassification {
   score: number;
-  band: HybridBand;
+  band: TaskBand;
   signals: string[];
-}
-
-export interface HybridPlan {
-  band: HybridBand;
-  useArchitect: boolean;
-  tier: 'low' | 'medium' | 'high';
-  escalateOnStall: boolean;
-  quotaDemoted: boolean;
-  reason: string;
-  classification: TaskClassification;
 }
 
 /** What is actually resident on the GPU right now. */
@@ -139,7 +105,7 @@ export interface LocalEngineStatus {
   coderBlockedBy?: string;
   /** Live sibling Strata apps found via their presence files. */
   siblings?: { app: string; pid: number; models: string[] }[];
-  gpu?: { totalMiB: number; usedMiB: number; freeMiB: number };
+  gpu?: { totalMiB: number; usedMiB: number; freeMiB: number; unified?: boolean };
 }
 
 export interface EditorContext {
@@ -156,14 +122,9 @@ export class AgentEngine {
   abortController: AbortController | null = null;
   history: AgentMessage[] = [];
   pendingApprovals = new Map<string, (approved: boolean) => void>();
-  gpuName: string = 'RTX 5090';
-  providerConfig: ProviderConfig = {
-    activeProvider: 'ollama',
-    hybridMode: false,
-    hybridArchitectModel: 'local',
-    hybridArchitectProvider: 'local',
-    allowPaidApis: false
-  };
+  /** The GPU the hardware probe found (main.ts detectHardwareInfo), named in the transcript and the prompts; until it answers, a neutral word. */
+  gpuName: string = 'the local GPU';
+  providerConfig: ProviderConfig = { activeProvider: 'ollama' };
   static nonToolModels: Set<string> = new Set<string>(['gemma3:27b', 'gemma3', 'gemma:7b', 'gemma:2b', 'gemma']);
 
   /**
@@ -209,52 +170,12 @@ export class AgentEngine {
   setProviderConfig(config: ProviderConfig) {
     this.providerConfig = config || {
       activeProvider: 'ollama',
-      hybridMode: false,
-      hybridArchitectModel: 'qwen3.8:27b',
       generalModel: 'qwen3.8:27b',
-      codingModel: 'Qwen3-Coder-30B-A3B-Instruct',
-      allowPaidApis: false
+      codingModel: 'Qwen3-Coder-30B-A3B-Instruct'
     };
   }
 
   onConfigUpdate?: (config: ProviderConfig) => void;
-
-  /**
-   * Gracefully falls back to direct model execution if an engine error occurs.
-   */
-  handleQuotaExceeded(reason: string, workerModel: string): string {
-    console.warn(`[Local Dual-Brain] Handled notice: ${reason}`);
-    this.providerConfig.hybridMode = false;
-    this.providerConfig.activeProvider = 'ollama';
-    if (this.onConfigUpdate) {
-      this.onConfigUpdate(this.providerConfig);
-    }
-    this.send('provider:config-updated', this.providerConfig);
-    this.send('hybrid:disabled', { reason, fallbackModel: workerModel });
-
-    return `> 🛡️ **Local Dual-Brain Notice**: ${reason}\n>\n` +
-           `> Continuing 100% locally on your NVIDIA RTX 5090 GPU (\`${workerModel}\`) with zero interruption, zero cost, and unlimited local tokens!\n\n`;
-  }
-
-  recordGeminiUsage(
-    _promptTokens = 0,
-    _candidateTokens = 0,
-    _localTokensOffloaded = 0,
-    _modelName?: string,
-    _advanceQuotaMeters = true
-  ) {
-    // Pure local dual-brain mode: zero cloud tokens tracked.
-  }
-
-  getGeminiQuota(): any {
-    return {
-      inputTokens: 0,
-      outputTokens: 0,
-      totalTokens: 0,
-      requestCount: 0,
-      localTokensOffloaded: 0
-    };
-  }
 
   setGpuName(gpu: string) {
     if (gpu && gpu.trim()) {
@@ -385,23 +306,19 @@ export class AgentEngine {
     return chars / 3;
   }
 
-  writeLiveDialogue(type: 'USER' | 'ARCHITECT' | 'WORKER' | 'VERIFICATION', title: string, content: string) {
+  writeLiveDialogue(type: 'USER' | 'WORKER', title: string, content: string) {
     try {
       const livePath = liveSessionPath();
       const timeStr = new Date().toLocaleTimeString();
       let entry = '';
       if (type === 'USER') {
-        entry = `\n\n---\n## 👤 User Prompt\n> **"${content}"**\n*(Architecture: Local Dual-Brain • Hardware: NVIDIA RTX 5090 • Time: ${timeStr})*\n`;
-      } else if (type === 'ARCHITECT') {
-        entry = `\n${content}\n`;
+        entry = `\n\n---\n## 👤 User Prompt\n> **"${content}"**\n*(Strata Code • Hardware: ${this.gpuName} • Time: ${timeStr})*\n`;
       } else if (type === 'WORKER') {
         if (content.startsWith('### 💻') || content.startsWith('> 🔧')) {
           entry = `\n${content}\n`;
         } else {
-          entry = `\n### 💻 Local Coder Worker (RTX 5090) ➔ @Local Architect\n\n${content}\n`;
+          entry = `\n### 💻 Local Model (${this.gpuName}) ➔ @User\n\n${content}\n`;
         }
-      } else if (type === 'VERIFICATION') {
-        entry = `\n${content}\n`;
       }
       // Asynchronous + serialized: appendFileSync blocked the Electron main
       // process (and therefore every IPC message and the whole UI) on a disk
@@ -543,8 +460,8 @@ export class AgentEngine {
   private static readonly ENGINE_PROBE_TTL_MS = 10000;
   private static readonly ENGINE_PROBE_IDLE_TTL_MS = 30000;
   private engineStatus: LocalEngineStatus | null = null;
-  /** Last nvidia-smi reading, reused while nothing is resident so no probe spawns on a timer at idle. */
-  private lastGpuReading: { totalMiB: number; usedMiB: number; freeMiB: number } | undefined;
+  /** Last nvidia-smi / vm_stat reading, reused while nothing is resident so no probe spawns on a timer at idle. */
+  private lastGpuReading: { totalMiB: number; usedMiB: number; freeMiB: number; unified?: boolean } | undefined;
   private engineProbeInFlight: Promise<LocalEngineStatus> | null = null;
   private ollamaSizeCache: Map<string, number> | null = null;
   private serverAliasLower: string | null = null;
@@ -572,7 +489,16 @@ export class AgentEngine {
     }
   }
 
-  private readGpuMemory(): Promise<{ totalMiB: number; usedMiB: number; freeMiB: number } | undefined> {
+  /**
+   * GPU memory for the VRAM arbiter. nvidia-smi where there is an NVIDIA card;
+   * on Apple Silicon the GPU shares unified memory with everything else, so the
+   * reading is the machine's total RAM and what is currently available
+   * (`vm_stat`: free + inactive + speculative pages). The arbiter's question -
+   * "does the coder still fit next to what Ollama holds?" - has the same
+   * answer either way; `unified` lets the UI label it honestly.
+   */
+  private readGpuMemory(): Promise<{ totalMiB: number; usedMiB: number; freeMiB: number; unified?: boolean } | undefined> {
+    if (process.platform === 'darwin') return this.readUnifiedMemoryDarwin();
     return new Promise((resolve) => {
       try {
         execFile(
@@ -580,7 +506,10 @@ export class AgentEngine {
           ['--query-gpu=memory.total,memory.used,memory.free', '--format=csv,noheader,nounits'],
           { timeout: 2000, windowsHide: true },
           (err: any, stdout: any) => {
-            if (err || !stdout) return resolve(undefined);
+            if (err || !stdout) {
+              if (process.platform === 'linux') return resolve(this.readMemInfoLinux());
+              return resolve(undefined);
+            }
             // First line = first GPU.
             const parts = String(stdout).trim().split('\n')[0].split(',').map(v => parseInt(v.trim(), 10));
             if (parts.length < 3 || parts.some(v => !Number.isFinite(v))) return resolve(undefined);
@@ -591,6 +520,39 @@ export class AgentEngine {
         resolve(undefined);
       }
     });
+  }
+
+  private readUnifiedMemoryDarwin(): Promise<{ totalMiB: number; usedMiB: number; freeMiB: number; unified: boolean } | undefined> {
+    const totalMiB = Math.round(os.totalmem() / (1024 * 1024));
+    return new Promise((resolve) => {
+      try {
+        execFile('vm_stat', [], { timeout: 2000 }, (err: any, stdout: any) => {
+          if (err || !stdout) return resolve({ totalMiB, usedMiB: totalMiB - Math.round(os.freemem() / 1048576), freeMiB: Math.round(os.freemem() / 1048576), unified: true });
+          const text = String(stdout);
+          const pageSize = parseInt((text.match(/page size of (\d+) bytes/) || [])[1] || '16384', 10);
+          const pages = (label: string) => parseInt((text.match(new RegExp(`${label}:\\s+(\\d+)`)) || [])[1] || '0', 10);
+          const availPages = pages('Pages free') + pages('Pages inactive') + pages('Pages speculative');
+          const freeMiB = Math.min(totalMiB, Math.round(availPages * pageSize / (1024 * 1024)));
+          resolve({ totalMiB, usedMiB: totalMiB - freeMiB, freeMiB, unified: true });
+        });
+      } catch {
+        resolve(undefined);
+      }
+    });
+  }
+
+  /** Linux without an NVIDIA card (CPU / integrated / ROCm): MemAvailable from /proc/meminfo, labelled unified. */
+  private readMemInfoLinux(): { totalMiB: number; usedMiB: number; freeMiB: number; unified: boolean } | undefined {
+    try {
+      const text = fs.readFileSync('/proc/meminfo', 'utf-8');
+      const kb = (label: string) => parseInt((text.match(new RegExp(`${label}:\\s+(\\d+)`)) || [])[1] || '0', 10);
+      const totalMiB = Math.round(kb('MemTotal') / 1024);
+      const freeMiB = Math.round(kb('MemAvailable') / 1024);
+      if (!totalMiB) return undefined;
+      return { totalMiB, usedMiB: totalMiB - freeMiB, freeMiB, unified: true };
+    } catch {
+      return undefined;
+    }
   }
 
   /** Snapshot of both local engines. Cached briefly so a tool-heavy turn does not re-probe per call. */
@@ -748,7 +710,7 @@ export class AgentEngine {
     const n = normalizeModelName(name);
     if (!n) return false;
     const c = this.providerConfig;
-    return [c.codingModel, c.generalModel, c.hybridArchitectModel, c.hybridWorkerModel, c.ollamaModel]
+    return [c.codingModel, c.generalModel, c.ollamaModel]
       .filter(Boolean)
       .some(o => normalizeModelName(String(o)) === n);
   }
@@ -759,8 +721,20 @@ export class AgentEngine {
    * excluded by the command-line filter.
    */
   findCoderServerPids(): Promise<number[]> {
-    if (process.platform !== 'win32') return Promise.resolve([]);
     const port = this.coderServerPort();
+    if (process.platform !== 'win32') {
+      // pgrep -f matches the full command line; anchored on the binary name and the port.
+      return new Promise((resolve) => {
+        try {
+          execFile('pgrep', ['-f', `llama-server.*--port[ =]${port}(\\s|$)`], { timeout: 3000 }, (err: any, stdout: any) => {
+            if (err) return resolve([]);
+            resolve(String(stdout || '').split(/\s+/).map(v => parseInt(v, 10)).filter(v => Number.isFinite(v) && v > 0 && v !== process.pid));
+          });
+        } catch {
+          resolve([]);
+        }
+      });
+    }
     const script = `Get-CimInstance Win32_Process -Filter "Name='llama-server.exe'" | ForEach-Object { "$($_.ProcessId)|$($_.CommandLine)" }`;
     return new Promise((resolve) => {
       try {
@@ -987,105 +961,12 @@ export class AgentEngine {
   }
 
   // =========================================================================
-  // CLOUD ARCHITECT PROVIDER
+  // TASK CLASSIFICATION
   //
-  // The hybrid architect used to be hardwired to Gemini in four separate places
-  // (blueprint, verification, stall re-plan, direct chat), each with its own
-  // inline `isRealGoogleApiKey` check. Everything now goes through one entry
-  // point so the architect can be Claude or Gemini interchangeably.
-  // =========================================================================
-
-  /** True when per-token APIs are permitted. */
-  paidApisAllowed(): boolean {
-    return this.providerConfig.allowPaidApis === true;
-  }
-
-  /** Which service backs an architect model id. Always local. */
-  architectProviderFor(_modelId?: string): ArchitectProvider {
-    return 'local';
-  }
-
-  /**
-   * The model that plays the architect when running local dual-brain mode.
-   * Defaults to generalModel (qwen3.8:27b).
-   */
-  localArchitectModel(_workerModel?: string): string {
-    return this.providerConfig.generalModel
-      || this.providerConfig.hybridArchitectModel
-      || 'qwen3.8:27b';
-  }
-
-  /** The architect model actually in effect. */
-  architectModelId(): string {
-    return this.providerConfig.hybridArchitectModel
-      || this.providerConfig.generalModel
-      || 'qwen3.8:27b';
-  }
-
-  /** Human-facing name for the architect, used in transcript labels. */
-  architectLabel(modelId?: string): string {
-    const id = modelId || this.architectModelId();
-    return `Local Architect (${id} • RTX 5090)`;
-  }
-
-  /** True when the local architect is available (always true). */
-  hasArchitectKey(_modelId?: string): boolean {
-    return true;
-  }
-
-  /** Single entry point for every architect call. */
-  private async callArchitect(
-    messages: AgentMessage[],
-    model: string,
-    signal: AbortSignal,
-    taskMode: string,
-    localFallbackModel?: string
-  ): Promise<{ content: string; promptTokens: number; candidateTokens: number; provider: ArchitectProvider }> {
-    const targetModel = (model && model !== 'local') ? model : this.localArchitectModel(localFallbackModel);
-    // useTools=false: the architect writes a blueprint, it does not execute tools directly.
-    const res = await this.callLocalModel(
-      messages,
-      targetModel,
-      signal,
-      taskMode,
-      undefined,
-      false
-    );
-    return { content: res.content, promptTokens: 0, candidateTokens: 0, provider: 'local' };
-  }
-
-  private recordArchitectUsage(
-    _provider: ArchitectProvider,
-    _promptTokens: number,
-    _candidateTokens: number,
-    _modelName?: string
-  ) {
-    // Pure local mode
-  }
-
-  /**
-   * Architect models offered in the dual-brain picker (100% local).
-   */
-  async listArchitectModels(): Promise<ArchitectModelOption[]> {
-    return AgentEngine.STATIC_ARCHITECT_MODELS.map(m => ({ ...m }));
-  }
-
-  static EXCLUDED_ARCHITECT_MODELS = ['fable'];
-
-  static STATIC_ARCHITECT_MODELS: ArchitectModelOption[] = [
-    { id: 'qwen3.8:27b', name: 'Qwen 3.8 (27B) — General Architect (Ollama)', provider: 'local', live: true },
-    { id: 'deepseek-r1:32b', name: 'DeepSeek R1 (32B Reasoning)', provider: 'local', live: true },
-    { id: 'Qwen3-Coder-30B-A3B-Instruct', name: 'Qwen3-Coder (30B) — Specialist Coder (Port 8080)', provider: 'local', live: true }
-  ];
-
-  // =========================================================================
-  // HYBRID INTELLIGENCE
-  //
-  // Hybrid mode used to call the cloud architect on EVERY run at a fixed,
-  // user-set tier, plan before anything had looked at the workspace, track quota
-  // percentages it never consulted, and throw away its own stall detection.
-  // This layer makes those four decisions instead of hardcoding them - all of it
-  // from local heuristics, so classification itself costs nothing.
+  // A cheap local score of how much a request asks for, from the prompt and
+  // editor state alone. It decides whether the workspace is searched for the
+  // request's identifiers before the model sees it: a two-word acknowledgement
+  // or a rename does not need five thousand characters of grounding.
   // =========================================================================
 
   /**
@@ -1161,117 +1042,12 @@ export class AgentEngine {
     if (taskMode === 'general') score -= 6;
 
     score = Math.max(0, Math.min(100, Math.round(score)));
-    const band: HybridBand =
+    const band: TaskBand =
       score < 22 ? 'trivial' :
       score <= 45 ? 'moderate' :
       score <= 72 ? 'complex' : 'deep';
 
     return { score, band, signals };
-  }
-
-  /**
-   * Pure Local Dual-Brain Router:
-   * Coordinates Brain 1 (General Architect) and Brain 2 (Coder Worker)
-   * with zero cloud tokens and $0.00 cost on RTX 5090.
-   */
-  planHybridRun(
-    prompt: string,
-    editorContext: EditorContext | undefined,
-    taskMode: string,
-    userTier: 'low' | 'medium' | 'high',
-    _architectProvider: ArchitectProvider = 'local'
-  ): HybridPlan {
-    const classification = this.classifyTask(prompt, editorContext, taskMode);
-    const band = classification.band;
-    const reasons: string[] = [];
-
-    const p = (prompt || '').trim();
-    const words = p.split(/\s+/).filter(Boolean).length;
-    const isSingleWordAck = words <= 2 && /^(ok|okay|yes|yep|sure|continue|proceed|go ahead|thanks|thank you|no|nope)$/i.test(p);
-    // A question gets a direct answer, not a blueprint. Sending "does this
-    // hybrid mode work" to the architect produced a prose reply, which the
-    // engine then treated as a failed plan and retried.
-    const editVerb = /\b(fix|implement|add|create|write|refactor|update|change|remove|delete|rename|build|make|generate|design|migrate|convert|replace|move|extract|introduce|set up|setup|install|configure|optimi[sz]e|rework|improve)\b/i.test(p);
-    const isQuestion = (/\?\s*$/.test(p) || /^(does|do|is|are|can|could|should|will|would|what|which|why|how|where|when|who|explain|describe|tell me|summari[sz]e|what's|whats|show me)\b/i.test(p)) && !editVerb;
-    const advisory = isAdvisoryRequest(p);
-    const direct = isSingleWordAck || isQuestion || advisory || band === 'trivial';
-    const useArchitect = !direct;
-    const tier = userTier;
-    if (isQuestion) reasons.push('question - direct answer, no blueprint');
-    else if (advisory) reasons.push('analysis request - inspect and answer in chat, no file changes');
-    else if (band === 'trivial' && !isSingleWordAck) reasons.push('mechanical task - direct worker');
-
-    const head = useArchitect
-      ? `${band} task (score ${classification.score}) - Local Dual-Brain Architect (RTX 5090 • $0.00)`
-      : `${band} task (score ${classification.score}) - direct local coder execution`;
-
-    return {
-      band,
-      useArchitect,
-      tier,
-      escalateOnStall: true,
-      quotaDemoted: false,
-      reason: reasons.length ? `${head}; ${reasons.join(', ')}` : head,
-      classification
-    };
-  }
-
-  /** Cheap structural outline of a source file - declarations only, never the body. */
-  private outlineSource(content: string, maxLines = 60): string {
-    return outlineSourceText(content, maxLines);
-  }
-
-  /**
-   * Real workspace facts for the architect, gathered locally.
-   *
-   * The architect used to plan blind and invent plausible-looking file paths,
-   * which the worker then burned turns discovering were wrong. This costs zero
-   * cloud tokens and is the single highest-leverage input to blueprint quality.
-   */
-  private async buildWorkspaceGrounding(
-    editorContext?: EditorContext,
-    extras: { profile?: ProjectProfile; retrievalBlock?: string } = {}
-  ): Promise<string> {
-    const parts: string[] = [];
-
-    if (extras.profile && extras.profile.summary) {
-      parts.push(`PROJECT PROFILE: ${extras.profile.summary}`);
-    }
-
-    try {
-      const listing = await this.tools.listFiles('.', 2);
-      if (listing.success && listing.output) {
-        const lines = listing.output.split('\n');
-        const shown = lines.length > 160
-          ? [...lines.slice(0, 150), `... [${lines.length - 150} more entries omitted]`]
-          : lines;
-        parts.push(`WORKSPACE TREE (depth 2, rooted at "${this.workspaceDir}"):\n${shown.join('\n')}`);
-      }
-    } catch {
-      // Listing is best-effort; a blind plan is still better than no plan.
-    }
-
-    if (editorContext?.activeFile && editorContext.activeFileContent) {
-      const outline = this.outlineSource(editorContext.activeFileContent);
-      if (outline) {
-        parts.push(`DECLARATION OUTLINE OF THE ACTIVE FILE (${editorContext.activeFile}):\n${outline}`);
-      }
-    }
-
-    if (editorContext?.openTabs && editorContext.openTabs.length > 0) {
-      parts.push(`OPEN EDITOR TABS: ${editorContext.openTabs.map(t => t.path || t.name).join(', ')}`);
-    }
-
-    if (extras.retrievalBlock) {
-      parts.push(extras.retrievalBlock);
-    }
-
-    if (parts.length === 0) return '';
-
-    return `[WORKSPACE GROUND TRUTH - read from disk locally at zero cloud cost]
-Use these REAL paths. Do not invent file names or guess at project layout; everything you need to reference is below.
-
-${parts.join('\n\n')}`;
   }
 
   /**
@@ -1371,22 +1147,12 @@ ${parts.join('\n\n')}`;
     const maxTokensBudget = await this.getLocalContextBudget(endpoint);
     const safeMessages = this.getPrunedHistory(messages, maxTokensBudget);
 
-    // Sanitize message sequence: convert Architect directives from assistant to user instruction
+    // Message sequence as Ollama wants it: text parts, image parts, tool calls.
     const formattedMessages: any[] = [];
     for (const m of safeMessages) {
       let role = m.role;
       let content = m.content || '';
       const hasToolCalls = (m.tool_calls && m.tool_calls.length > 0) || ((m as any).toolCalls && (m as any).toolCalls.length > 0);
-
-      // Legacy blueprints were stored as assistant turns; new ones are pushed as
-      // user directives directly (see run()), so only the old header shape is
-      // re-roled. Matching on loose phrases like "Local Architect" used to
-      // catch the architect's *verification* message too and turn it into a
-      // fresh directive on the next run.
-      if (role === 'assistant' && !hasToolCalls && content.startsWith('### 🧠 Local Architect (Brain 1')) {
-        role = 'user';
-        content = `[LEAD ARCHITECT DIRECTIVE (Brain 1 • General Model)]:\n${content}\n\n[MANDATORY WORKER EXECUTION INSTRUCTION]:\nYou are the Autonomous Implementation Worker running locally on this NVIDIA RTX 5090 workstation.\nImmediately execute the architectural blueprint above by calling workspace tools (search_codebase, read_file, write_file, edit_file, run_command, list_files). Do NOT echo or repeat the blueprint. Do NOT output conversational pleasantries. Directly invoke the required tool.`;
-      }
 
       if (m.role === 'user' && m.images && m.images.length > 0) {
         const parts: any[] = [];
@@ -1438,7 +1204,7 @@ ${parts.join('\n\n')}`;
     if (is8080) {
       // Qwen3-Coder-30B-A3B model-card sampling. Running an MoE coder at temp 0.2
       // with no top_k bound is the classic recipe for repetition/echo loops - the
-      // exact failure the architect-directive sanitizer was working around.
+      // exact failure the message sanitizer was working around.
       payload.temperature = taskMode === 'general' ? 0.7 : 0.7;
       payload.top_p = 0.8;
       payload.top_k = 20;
@@ -1827,19 +1593,6 @@ ${parts.join('\n\n')}`;
       const hasToolCalls = (m.tool_calls && m.tool_calls.length > 0) ||
                            ((m as any).toolCalls && (m as any).toolCalls.length > 0);
 
-      // Only convert a LEGACY assistant blueprint (old header shape) to a user
-      // directive. New blueprints are already user-role; verification messages
-      // must stay assistant-role or they become a fresh directive next run.
-      if (role === 'assistant' && !hasToolCalls && content.startsWith('### 🧠 Local Architect (Brain 1')) {
-        role = 'user';
-        content = `[LEAD ARCHITECT DIRECTIVE]\n${content}\n\n[MANDATORY WORKER EXECUTION INSTRUCTION]:
-You are the Autonomous Implementation Worker on this NVIDIA RTX 5090 workstation.
-1. DO NOT thank the architect.
-2. DO NOT summarize or re-explain the blueprint.
-3. DO NOT output conversational pleasantries.
-4. IMMEDIATELY start executing the blueprint by calling the appropriate tool (such as list_files, read_file, edit_file, write_file, or run_command) or producing the direct implementation code.`;
-      }
-
       const msg: any = { role, content };
 
       if (hasToolCalls) {
@@ -1889,7 +1642,7 @@ You are the Autonomous Implementation Worker on this NVIDIA RTX 5090 workstation
     // deepseek-r1) left to its default spends hundreds of tokens at ~30 tok/s
     // on hidden reasoning before every worker tool call - and the old code
     // never read `message.thinking`, so the user saw a silent stall. Worker
-    // turns get think:false; the architect gets it on when the tier warrants.
+    // turns get think:false; a caller asks for it explicitly when it wants it.
     const thinkCapable = await this.ollamaSupportsThinking(model || 'qwen3.8:27b');
     const think: boolean | undefined = thinkCapable ? (extra.think === true) : undefined;
     // Pinned, NOT adaptive, and shared with Strata Photo (OLLAMA_NUM_CTX). Ollama reloads the model from
@@ -2350,56 +2103,21 @@ WORKING METHOD (follow exactly):
     // RUN STATE
     // =========================================================================
     const MAX_TURNS = 60;
-    const REVISE_TURNS = 14;
     // Turn count alone does not bound cost: one turn can carry a 48K-token prompt.
     // This is the actual ceiling on a runaway autonomous loop.
     const MAX_RUN_TOKENS = 120000;
     let turnCount = 0;
     let localTokensAccumulated = 0;
-    const cloudTokensAccumulated = 0;
     let budgetExhausted = false;
     let hitTurnLimit = false;
 
-    let activeProvider = this.providerConfig?.activeProvider || 'ollama';
-    const isHybrid = this.providerConfig.hybridMode === true ||
-                     (this.providerConfig.hybridMode !== false &&
-                      (activeProvider === 'hybrid' ||
-                       model === 'hybrid' ||
-                       model.startsWith('hybrid:')));
-
+    const activeProvider = this.providerConfig?.activeProvider || 'ollama';
     const codingModel = this.providerConfig.codingModel || 'qwen2.5-coder:32b';
     const generalModel = this.providerConfig.generalModel || 'qwen3.8:27b';
-
-    // The user's setting is a CEILING on architect effort; the router may choose less.
-    const userHybridTier: 'low' | 'medium' | 'high' = this.providerConfig.hybridTier || 'medium';
-    let hybridTier: 'low' | 'medium' | 'high' = userHybridTier;
-    let architectModel = this.architectModelId();
-    if (model.startsWith('hybrid:')) {
-      const parsed = model.replace('hybrid:', '').trim();
-      if (parsed) architectModel = parsed;
-    }
-    let architectProvider = this.architectProviderFor(architectModel);
-    if (architectProvider !== 'local' && !this.hasArchitectKey(architectModel)) {
-      console.log(`[Hybrid] No ${architectProvider} key configured - architect runs locally on the RTX 5090 (free).`);
-      architectProvider = 'local';
-      architectModel = 'local';
-    }
-    const architectLabel = this.architectLabel(architectModel);
-
-    // In Hybrid mode: pair worker by task mode (coding -> codingModel, general -> generalModel)
-    let workerModel = this.providerConfig.hybridWorkerModel ||
-      (isHybrid ? (taskMode === 'coding' ? codingModel : generalModel) :
-       (model !== 'hybrid' && !model.startsWith('hybrid:') && !model.startsWith('gemini') ? model : (taskMode === 'coding' ? codingModel : generalModel)));
-
-    // Route this run before spending anything on it.
-    const hybridPlan = isHybrid
-      ? this.planHybridRun(prompt, editorContext, taskMode, userHybridTier, architectProvider)
-      : null;
-    if (hybridPlan) {
-      hybridTier = hybridPlan.tier;
-      console.log(`[Hybrid Router] ${hybridPlan.reason} | signals: ${hybridPlan.classification.signals.join(', ') || 'none'}`);
-    }
-    let architectEscalations = 0;
+    // A slot saved by an older build may still name the removed dual-brain mode or a cloud
+    // model; such a run goes to the slot model for its task mode.
+    const legacyModel = model === 'hybrid' || model.startsWith('hybrid:') || model.startsWith('gemini');
+    let workerModel = legacyModel ? (taskMode === 'coding' ? codingModel : generalModel) : model;
 
     // "What model is this?" is answered by the engine from what it actually
     // knows - configured slots, what is resident on the GPU, and where this
@@ -2427,60 +2145,42 @@ WORKING METHOD (follow exactly):
         routedText = `**${workerModel}**`;
       }
       const answer = [
-        `**Configured** — coding model: \`${codingModel}\` • general model: \`${generalModel}\` • architect: \`${architectModel}\` • mode: ${isHybrid ? `hybrid (${hybridTier})` : 'local'} • task mode: ${taskMode}`,
+        `**Configured** — coding model: \`${codingModel}\` • general model: \`${generalModel}\` • task mode: ${taskMode}`,
         `**Resident right now** — ${statusText}`,
         `**This turn would run on** — ${routedText}`,
-        `Change the slots from the model picker in the title bar or the Model Manager. In hybrid mode the coding model is the worker and the general model is the architect.`
+        `Change the slots from the model picker in the title bar or the Model Manager.`
       ].join('\n\n');
       const sender = { model: 'Strata Engine', senderModelType: 'local', senderName: 'Strata Engine', addressedTo: 'User' };
       this.send('agent:message-start', sender);
       this.send('agent:token', { token: answer, ...sender });
       this.flushTokens();
       this.history.push({ role: 'assistant', content: answer });
-      this.send('agent:collaborate-step', {
-        stage: 'verified', architectModel: '', workerModel, activeRole: 'worker',
+      this.send('agent:step', {
+        stage: 'verified', workerModel,
         title: 'Answered by the engine', message: 'Model identity resolved from engine state (no model call).',
-        cloudTokens: 0, localTokens: 0, quotaSavedPercent: 0
-      });
+        localTokens: 0
+      } as EngineStepData);
       this.send('agent:status', { state: 'idle' });
       return;
     }
 
     const gateEnabled = this.providerConfig.verificationGate !== false;
-    const maxReviewRounds = typeof this.providerConfig.maxReviewRounds === 'number'
-      ? Math.max(0, Math.min(this.providerConfig.maxReviewRounds, 3))
-      : 1;
-    const thinkMode = this.providerConfig.architectThinking || 'auto';
-    const architectShouldThink = (phase: 'plan' | 'replan' | 'review'): boolean => {
-      if (thinkMode === 'off') return false;
-      if (thinkMode === 'on') return true;
-      if (phase === 'replan') return hybridTier !== 'low';
-      return hybridTier === 'high';
-    };
-
     interface EditRecord { path: string; oldContent: string; newContent: string }
     interface VerifyRun { command: string; success: boolean; output: string }
     interface VerifyReport { round: number; results: VerifyRun[]; passed: boolean }
 
     const state = {
-      plan: null as TaskPlan | null,
       toolCalls: 0,
       edited: new Map<string, EditRecord>(),
       readCounts: new Map<string, number>(),
       editFailures: new Map<string, number>(),
-      nudges: 0,
       intentNudges: 0,
-      lastNudgeKey: '',
       verifyRounds: 0,
       editsSinceVerify: 0,
       verifyReports: [] as VerifyReport[],
-      reviewRounds: 0,
       consecutiveRepeat: 0,
       lastToolSig: '',
       currentBubble: '',
-      /** Tool calls made after every edit/run task was already closed. */
-      postDoneCalls: 0,
-      postDoneNudged: false,
       inspectCmdStreak: 0,
       created: new Set<string>(),
       /** Set once the inspection budget is spent: the next model turn runs with tools disabled so it must answer. */
@@ -2490,23 +2190,7 @@ WORKING METHOD (follow exactly):
     const countTokens = (text: string) => Math.round((text?.length || 0) / 3.5);
 
     // ---- transcript sender metadata --------------------------------------
-    const workerSender = (m: string) => isHybrid
-      ? {
-          model: m,
-          senderModelType: 'offline',
-          senderRole: 'worker',
-          senderName: `Local Coder Worker (${m} • RTX 5090)`,
-          addressedTo: 'Local Architect'
-        }
-      : { model: m };
-
-    const architectSender = (id: string, addressedTo: string) => ({
-      model: `Local Architect (${id})`,
-      senderModelType: 'local',
-      senderRole: 'architect',
-      senderName: `Local Architect (${id})`,
-      addressedTo
-    });
+    const workerSender = (m: string) => ({ model: m });
 
     const notice = (text: string) => {
       this.notice(text);
@@ -2528,8 +2212,8 @@ WORKING METHOD (follow exactly):
     // =========================================================================
     // VRAM PRE-FLIGHT
     //
-    // "The whole PC freezes and unfreezes in hybrid mode" is what a 30 GB card
-    // looks like with llama-server (~26 GB) AND an Ollama 27B (~19 GB) both
+    // "The whole PC freezes and unfreezes" is what a 30 GB card looks like
+    // with llama-server (~26 GB) AND an Ollama 27B (~19 GB) both
     // resident: the driver pages VRAM through system RAM and the desktop
     // stalls in bursts until one model unloads. Refuse to start a run in that
     // state - evict Ollama first, then go.
@@ -2592,95 +2276,8 @@ WORKING METHOD (follow exactly):
       state.currentBubble = key;
     };
 
-    const collab = (data: Partial<CollaborateStepData> & { stage: CollaborateStepData['stage']; title: string; message: string }) => {
-      this.send('agent:collaborate-step', {
-        architectModel: isHybrid ? architectModel : '',
-        workerModel,
-        activeRole: 'worker',
-        cloudTokens: cloudTokensAccumulated,
-        localTokens: localTokensAccumulated,
-        quotaSavedPercent: isHybrid ? 100 : 0,
-        hybridTier: isHybrid ? hybridTier : undefined,
-        ...data
-      });
-    };
-
-    // ---- architect call, streamed to the transcript ----------------------
-    const callArchitectStreaming = async (
-      messages: AgentMessage[],
-      modelId: string,
-      addressedTo: string,
-      headerFor: string | ((modelUsed: string) => string),
-      opts: { think?: boolean } = {}
-    ): Promise<{ content: string; modelUsed: string }> => {
-      let target = (modelId && modelId !== 'local') ? modelId : this.localArchitectModel(workerModel);
-      // The architect goes through the VRAM arbiter too. Before this, only the
-      // worker did - so a hybrid run with llama-server resident would load a
-      // second 17 GB model into a card that could not hold it, spill into
-      // shared memory, and crawl through the planning phase at 3 tok/s.
-      try {
-        const routed = await this.resolveLocalWorker(target);
-        if (routed.notice) arbiterNotice(routed.notice);
-        target = routed.model;
-      } catch {}
-
-      const sender = architectSender(target, addressedTo);
-      // Headers name the model that actually answered, not the configured id
-      // ('local' was showing up in the transcript as the architect's name).
-      const header = typeof headerFor === 'function' ? headerFor(target) : headerFor;
-      let started = false;
-      const start = () => {
-        if (started) return;
-        started = true;
-        this.send('agent:status', { state: 'responding' });
-        this.send('agent:message-start', sender);
-        state.currentBubble = `architect:${target}`;
-        if (header) this.send('agent:token', { token: header, ...sender });
-      };
-
-      // Early stop. A coder model planning without tools sometimes writes a
-      // fake python tool call and then re-emits the whole plan, seven times
-      // over. The first repeat (or the first fake call after the task list)
-      // ends the generation; the parser keeps the first copy.
-      const local = new AbortController();
-      const relay = () => local.abort();
-      signal.addEventListener('abort', relay);
-      let acc = '';
-      let cut = false;
-      const onTok = (tok: string) => {
-        start();
-        if (cut) return;
-        acc += tok;
-        const goals = (acc.match(/^#{1,3}\s*goal\b/gim) || []).length;
-        const hasTasks = /^#{1,3}\s*tasks\b/im.test(acc);
-        const fakeCall = hasTasks && /```(?:python|py|json|tool_call)?\s*\n\s*(?:list_files|read_file|edit_file|write_file|run_command|search_codebase)\s*\(/i.test(acc);
-        if (goals >= 2 || fakeCall) {
-          cut = true;
-          local.abort();
-          return;
-        }
-        this.send('agent:token', { token: tok, ...sender });
-      };
-      try {
-        const res = await this.callLocalModel(messages, target, local.signal, taskMode, onTok, false, { think: opts.think });
-        start();
-        if (!res.streamed && res.content) {
-          this.send('agent:token', { token: res.content, ...sender });
-        }
-        return { content: cut ? acc : (res.content || ''), modelUsed: target };
-      } catch (err: any) {
-        if (cut && !signal.aborted) {
-          notice('✂️ Architect started repeating itself; stopped it and kept the first plan.');
-          return { content: acc, modelUsed: target };
-        }
-        throw err;
-      } finally {
-        signal.removeEventListener('abort', relay);
-      }
-    };
-
-    const emitArchitectToken = (text: string, addressedTo: string, id: string) => {
-      this.send('agent:token', { token: text, ...architectSender(id, addressedTo) });
+    const collab = (data: { stage: EngineStepData['stage']; title: string; message: string }) => {
+      this.send('agent:step', { workerModel, localTokens: localTokensAccumulated, ...data } as EngineStepData);
     };
 
     // ---- worker call ------------------------------------------------------
@@ -2702,49 +2299,6 @@ WORKING METHOD (follow exactly):
         return this.callOpenAICompatible(this.history, effectiveModel, signal, 'openai', taskMode, onTok, useTools);
       }
       return this.callOllama(this.history, effectiveModel, signal, taskMode, onTok, useTools, { think: false });
-    };
-
-    // ---- stall escalation ------------------------------------------------
-    const escalateStall = async (toolName: string): Promise<void> => {
-      const canEscalate = isHybrid && hybridPlan?.escalateOnStall === true && architectEscalations < 2;
-      if (!canEscalate) return;
-      architectEscalations++;
-      try {
-        collab({
-          stage: 'escalate',
-          activeRole: 'architect',
-          title: `Worker Stalled — Escalating to Architect (${architectEscalations}/2)`,
-          message: `Local coder worker repeated \`${toolName}\` three times without progress. Asking ${architectModel} to diagnose and re-plan.`
-        });
-
-        const stallGrounding = await this.buildWorkspaceGrounding(editorContext, { profile: projectProfile });
-        const checklist = state.plan ? `\n\nCURRENT CHECKLIST:\n${renderChecklist(state.plan)}` : '';
-        const stallMessages: AgentMessage[] = [
-          {
-            role: 'system',
-            content: `You are the Lead Architect (Brain 1 • ${architectModel}). The local coder worker (${workerModel}) is STUCK: it has called \`${toolName}\` with identical arguments three times in a row and made no progress.
-
-Diagnose why it is looping (wrong path? target block not matching? reading instead of editing?), then issue a CORRECTED plan that avoids the failing action. Be concrete: exact file paths and the single next tool call to make. Under 200 words.${checklist}${stallGrounding ? `\n\n${stallGrounding}` : ''}`
-          },
-          ...this.getPrunedHistory(this.history, 12000).filter(m => m.role !== 'system')
-        ];
-
-        const header = `### 🧭 Local Architect Re-plan (worker stalled on \`${toolName}\`)\n\n`;
-        const replan = await callArchitectStreaming(stallMessages, architectModel, `Local Coder Worker (${workerModel})`, header, { think: architectShouldThink('replan') });
-        localTokensAccumulated += countTokens(replan.content);
-
-        if (replan.content) {
-          this.writeLiveDialogue('ARCHITECT', 'Stall Re-plan', `${header}${replan.content}`);
-          this.history.push({
-            role: 'user',
-            content: `[LOCAL ARCHITECT RE-PLAN — YOU WERE STUCK REPEATING ${toolName}]\n${replan.content}\n\n[MANDATORY]: Do NOT repeat that call. Follow the corrected plan above, starting from its first concrete step, by calling the tool now.`
-          });
-          state.consecutiveRepeat = 0;
-          state.lastToolSig = '';
-        }
-      } catch (escErr: any) {
-        console.warn('[Dual-Brain] Stall escalation failed:', escErr?.message);
-      }
     };
 
     // ---- one tool call ----------------------------------------------------
@@ -2785,7 +2339,6 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
           tool_call_id: callId,
           content: 'Action halted: identical tool call repeated 3 times. The result did not change; do something different (search_codebase for the exact text, read a different range, or edit with a shorter unique target).'
         });
-        await escalateStall(toolName);
         return 'halt';
       }
 
@@ -2976,11 +2529,6 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
         diff: result.diff
       });
 
-      if (isHybrid && result.output) {
-        const summarySnippet = result.output.length > 600 ? result.output.slice(0, 600) + '... [truncated]' : result.output;
-        this.writeLiveDialogue('WORKER', `Tool Execution: ${toolName}`, `> 🔧 **Local Worker Tool Execution**: \`${toolName}\` (${result.success ? '✅ Success' : '❌ Failed'})\n\`\`\`\n${summarySnippet}\n\`\`\``);
-      }
-
       this.history.push({
         role: 'tool',
         name: toolName,
@@ -2989,21 +2537,13 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
       });
 
       state.toolCalls++;
-      const progressed = applyToolOutcome(state.plan, toolName, toolArgs, result.success);
 
       localTokensAccumulated += countTokens(result.output);
       // The prompt is resent in full every turn, so it dominates real cost.
       // Counting it is what makes MAX_RUN_TOKENS a meaningful ceiling.
       localTokensAccumulated += Math.round(this.estimateMessageTokens(this.history) / 10);
 
-      const doneTask = progressed.changed && progressed.task && progressed.task.status === 'done' ? progressed.task : null;
-      collab({
-        stage: 'executing',
-        title: doneTask ? `✓ Task ${doneTask.id}: ${doneTask.title.slice(0, 60)}` : `Executed: ${toolName}`,
-        message: doneTask
-          ? `${toolName} on ${target || 'workspace'} completed checklist task ${doneTask.id}`
-          : `Processed ${toolName} ${isHybrid ? 'on local RTX 5090' : 'locally on RTX 5090'}`
-      });
+      collab({ stage: 'executing', title: `Executed: ${toolName}`, message: `Processed ${toolName} locally on ${this.gpuName}` });
       return 'ok';
     };
 
@@ -3066,23 +2606,17 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
      * loop simply ended. Decides whether the run is REALLY finished:
      *   1. edits pending verification -> run the gate; failures go back to the model
      *   2. the model narrated an action it did not take -> tell it to take it
-     *   3. checklist tasks still open after real tool work -> ask it to finish or account for them
      * Every branch is bounded so a confused model cannot loop forever.
      */
     const shouldContinue = async (responseContent: string): Promise<boolean> => {
       if (signal.aborted) return false;
-      applyCompletionClaims(state.plan, responseContent);
-      if (detectCompletionClaim(responseContent)) {
-        closeTasksClaimedDone(state.plan, [...state.edited.values()].map(e => e.path));
-      }
 
       if (state.editsSinceVerify > 0 && state.verifyRounds < 2) {
         const gate = await runVerificationGate(true);
         if (gate.ran && !gate.passed) return true;
       }
 
-      const codingRun = taskMode === 'coding' || !!state.plan;
-      if (!codingRun) return false;
+      if (taskMode !== 'coding') return false;
 
       if (detectNarratedIntent(responseContent) && state.intentNudges < 2) {
         state.intentNudges++;
@@ -3094,20 +2628,6 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
         return true;
       }
 
-      if (state.plan && state.toolCalls > 0 && state.nudges < 3) {
-        const pending = pendingTasks(state.plan).filter(t => t.kind !== 'inspect');
-        const key = pending.map(t => t.id).join(',');
-        if (pending.length && key !== state.lastNudgeKey) {
-          state.nudges++;
-          state.lastNudgeKey = key;
-          this.history.push({
-            role: 'user',
-            content: `[CONTINUATION] You stopped, but the checklist is not finished:\n${renderChecklist(state.plan, { withGoal: false })}\n\nFor each remaining task: either do it now by calling the next tool, or - if it is already complete or not needed - reply with one line per task in the form "TASK <n> DONE: <one-line evidence>" or "TASK <n> SKIP: <reason>". Do not restate the plan.`
-          });
-          notice(`↻ ${pending.length} checklist task(s) still open — asking the worker to finish or account for them (${state.nudges}/3).`);
-          return true;
-        }
-      }
       return false;
     };
 
@@ -3116,7 +2636,7 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
       let looping = true;
       let turnsThisLoop = 0;
       while (looping && turnsThisLoop < maxTurnsThisLoop && turnCount < MAX_TURNS && !signal.aborted) {
-        if (cloudTokensAccumulated + localTokensAccumulated >= MAX_RUN_TOKENS) {
+        if (localTokensAccumulated >= MAX_RUN_TOKENS) {
           budgetExhausted = true;
           break;
         }
@@ -3125,7 +2645,7 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
         this.send('agent:status', { state: 'thinking', turn: turnCount });
 
         try {
-          let effectiveModel = isHybrid ? workerModel : model;
+          let effectiveModel = workerModel;
 
           // VRAM-aware local routing. Only engages for local providers; cloud
           // providers are never re-routed.
@@ -3135,7 +2655,7 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
               if (routed.notice) arbiterNotice(routed.notice);
               if (routed.model !== effectiveModel) {
                 effectiveModel = routed.model;
-                if (isHybrid) workerModel = routed.model;
+                workerModel = routed.model;
               }
             } catch {
               // Arbiter is best-effort; never block a turn on it.
@@ -3169,9 +2689,6 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
           }
 
           this.history.push(assistantMsg);
-          if (responseContent && isHybrid) {
-            this.writeLiveDialogue('WORKER', 'Local Worker Execution', responseContent);
-          }
           localTokensAccumulated += countTokens(responseContent);
 
           if (toolCalls.length > 0) {
@@ -3195,34 +2712,6 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
               continue;
             }
 
-            // Post-completion guard. Once every edit/run task on the checklist
-            // is closed, further tool calls are exploration, not work. Nudge
-            // once, then end the run with an engine summary rather than let
-            // the worker list node_modules until the token budget is gone.
-            if (state.plan) {
-              const openWork = state.plan.tasks.filter(t => t.status !== 'done' && (t.kind === 'edit' || t.kind === 'run'));
-              if (openWork.length === 0) {
-                state.postDoneCalls += toolCalls.length;
-                if (state.postDoneCalls >= 10) {
-                  const files = [...state.edited.values()].map(e => e.path);
-                  const summary = `DONE (engine summary): every checklist task is complete but the worker kept exploring, so the run was ended here. Files changed: ${files.length ? files.join(', ') : 'none'}.`;
-                  ensureWorkerBubble(effectiveModel);
-                  this.send('agent:token', { token: `\n\n${summary}`, ...workerSender(effectiveModel) });
-                  this.history.push({ role: 'assistant', content: summary });
-                  notice(`⏹ Ended the worker loop: all checklist tasks were complete ${state.postDoneCalls} tool calls ago.`);
-                  looping = false;
-                  break;
-                }
-                if (state.postDoneCalls >= 4 && !state.postDoneNudged) {
-                  state.postDoneNudged = true;
-                  this.history.push({
-                    role: 'user',
-                    content: `[CONTINUATION] Every checklist task is complete. Stop exploring the workspace - do not run more listing or inspection commands. Reply now with "DONE:" followed by the files you changed and how they were verified.`
-                  });
-                  notice(`↻ All checklist tasks are complete but the worker is still exploring — asking it to wrap up.`);
-                }
-              }
-            }
             continue;
           }
 
@@ -3234,9 +2723,7 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
             collab({
               stage: 'verified',
               title: 'Response Complete',
-              message: isHybrid
-                ? 'Completed by local worker on RTX 5090'
-                : `Completed on RTX 5090 (${localTokensAccumulated.toLocaleString()} local tokens)`
+              message: `Completed on ${this.gpuName} (${localTokensAccumulated.toLocaleString()} local tokens)`
             });
           }
           looping = false;
@@ -3255,166 +2742,12 @@ Diagnose why it is looping (wrong path? target block not matching? reading inste
     };
 
     // =========================================================================
-    // DUAL-BRAIN TURN 1: STRUCTURED BLUEPRINT (BRAIN 1 • GENERAL MODEL)
-    //
-    // The architect now returns a fixed markdown shape that the engine parses
-    // into a checklist. The worker receives the checklist as a USER directive
-    // (never an assistant turn that then has to be re-roled), plus the same
-    // grounding the architect saw, so both brains reason from identical facts.
-    // =========================================================================
-    if (isHybrid && hybridPlan && !hybridPlan.useArchitect) {
-      collab({
-        stage: 'executing',
-        title: advisoryRun
-          ? 'Direct Worker — Analysis Request (answer in chat, no file changes)'
-          : /question/.test(hybridPlan.reason) ? 'Direct Worker — Question' : 'Direct Worker Execution — Mechanical Task',
-        message: `${hybridPlan.reason}. Running entirely on the RTX 5090 ($0.00 cost).`
-      });
-      activeProvider = 'ollama';
-    } else if (isHybrid) {
-      this.send('agent:status', { state: 'thinking', turn: 1 });
-      collab({
-        stage: 'plan',
-        activeRole: 'architect',
-        title: `Strategic Planning Phase (${hybridTier.toUpperCase()})`,
-        message: `${architectLabel} • ${hybridTier.toUpperCase()} — reading the workspace and formulating the blueprint...`
-      });
-
-      try {
-        const taskBudget = hybridTier === 'low' ? '2-3 tasks, under 120 words total'
-          : hybridTier === 'high' ? '4-8 tasks, each with function/contract-level detail, and an explicit verification task'
-          : '3-6 tasks';
-        const tierProtocol = `COLLABORATIVE ARCHITECTURE PROTOCOL (${hybridTier.toUpperCase()} TIER):
-You are the Lead Architect (Brain 1 • ${architectModel}) running locally on the user's NVIDIA RTX 5090, planning for the Specialist Coder Worker (Brain 2 • ${workerModel}). You do NOT execute tools; the worker does. You have the real workspace facts below - use those exact paths and line numbers, never invented ones.
-
-Respond in EXACTLY this markdown structure and nothing else:
-## Goal
-<one sentence>
-## Tasks
-1. <imperative title> — files: <real/path.ext, ...> — done when: <observable criterion>
-2. ...
-## Verify
-- \`<command>\` (use the project's verify command from the profile when one exists)
-## Risks
-- <one line each; omit the section if none>
-
-Rules: ${taskBudget}. Every edit task names its file(s). If the WORKSPACE CONTEXT already pins down the exact lines, the first task is the edit itself - do not add a "read the file" task. Prefer edit_file over rewriting files. If the request asks for a design, architecture, plan, proposal or document, the deliverable is ONE NEW file the worker creates with write_file (e.g. docs/<topic>.md) - make that an explicit task with the path; inspection alone never completes such a request, and do NOT add implementation tasks the user did not ask for (a design request is done when the document is written). NEVER plan to overwrite or "update" existing documentation or source files the user did not name - existing docs are reference material, not the deliverable. Verify a document with a line count (e.g. \`(Get-Content docs/x.md).Count\`), never by printing it. You have no tools: never write "let me inspect" - plan from the facts above. No prose outside the sections, no code blocks except commands.`;
-
-        // Read the workspace BEFORE planning, locally and for free.
-        const grounding = await this.buildWorkspaceGrounding(editorContext, { profile: projectProfile, retrievalBlock });
-        const historyForPlan = this.history
-          .filter(m => m.role !== 'system')
-          .map((m, i, arr) => {
-            // The latest user prompt already carries the retrieval block; the
-            // grounding above includes it, so send it once.
-            if (i === arr.length - 1 && m.role === 'user' && retrievalBlock && m.content.includes(retrievalBlock)) {
-              return { ...m, content: m.content.replace(retrievalBlock, '').trimEnd() };
-            }
-            return m;
-          });
-        const planMessages: AgentMessage[] = [
-          {
-            role: 'system',
-            content: `${this.history[0]?.content || ''}\n\n${tierProtocol}${grounding ? `\n\n${grounding}` : ''}`
-          },
-          ...historyForPlan
-        ];
-
-        const tierTag = hybridTier === 'low' ? ' • LOW' : hybridTier === 'high' ? ' • HIGH' : ' • MED';
-        const blueprintHeader = (m: string) => `### 🧠 Local Architect (Brain 1 • ${m}${tierTag}) ➔ @Local Coder Worker\n\n`;
-        const planOpts = { prompt, verifyCommand: projectProfile.verifyCommands[0] };
-        const planRes = await callArchitectStreaming(
-          planMessages,
-          architectModel,
-          `Local Coder Worker (${workerModel})`,
-          blueprintHeader,
-          { think: architectShouldThink('plan') }
-        );
-        if (architectModel === 'local') architectModel = planRes.modelUsed;
-        let planContent = planRes.content.trim();
-        localTokensAccumulated += countTokens(planContent);
-        let plan = parseBlueprint(planContent, 12, planOpts);
-
-        // The architect has no tools, but a coder model asked to plan will
-        // happily answer "Let me inspect the key files first" and stop. One
-        // firm retry with the facts it already has fixes that most of the time.
-        if (plan.synthesized && !signal.aborted) {
-          notice(`↻ Architect returned no task list (it tried to inspect instead of plan) — asking again with the workspace facts it already has.`);
-          const retryMessages: AgentMessage[] = [
-            ...planMessages,
-            ...(planContent ? [{ role: 'assistant' as const, content: planContent }] : []),
-            {
-              role: 'user' as const,
-              content: `You have NO tools and cannot inspect anything - the worker does that. Using ONLY the PROJECT PROFILE and WORKSPACE CONTEXT already given, write the blueprint NOW in the required structure: ## Goal, ## Tasks (numbered, each with files), ## Verify. If the request asks for a design, plan, proposal or document, the deliverable is a file the worker creates with write_file (e.g. docs/<topic>.md) - make that an explicit task. No preamble, no questions.`
-            }
-          ];
-          try {
-            const retry = await callArchitectStreaming(
-              retryMessages,
-              architectModel,
-              `Local Coder Worker (${workerModel})`,
-              () => `**Blueprint (second attempt):**\n\n`,
-              { think: architectShouldThink('plan') }
-            );
-            const retryContent = retry.content.trim();
-            localTokensAccumulated += countTokens(retryContent);
-            const plan2 = retryContent.length >= 30 ? parseBlueprint(retryContent, 12, planOpts) : null;
-            if (plan2 && !plan2.synthesized) {
-              plan = plan2;
-              planContent = retryContent;
-            }
-          } catch (retryErr: any) {
-            console.warn('[Dual-Brain] Architect retry failed:', retryErr?.message);
-          }
-        }
-
-        if (plan.synthesized) {
-          // Show the worker (and the user) the checklist the engine will hold it to.
-          const fallbackText = `## Goal\n${plan.goal}\n## Tasks\n${plan.tasks.map(t => `${t.id}. ${t.title}${t.files.length ? ` — files: ${t.files.join(', ')}` : ''}${t.doneWhen ? ` — done when: ${t.doneWhen}` : ''}`).join('\n')}${plan.verify.length ? `\n## Verify\n${plan.verify.map(v => `- \`${v}\``).join('\n')}` : ''}`;
-          emitArchitectToken(`\n\n**Engine-synthesized checklist** (the architect did not return a task list):\n${fallbackText}`, `Local Coder Worker (${workerModel})`, planRes.modelUsed);
-          planContent = `${planContent}\n\n${fallbackText}`.trim();
-        }
-
-        state.plan = plan;
-        const checklist = renderChecklist(plan);
-        const footnote = `\n\n---\n*Checklist: ${plan.tasks.length} task(s)${plan.synthesized ? ' (synthesized — the architect returned no task list)' : ''}, tracked by the engine. @Local Coder Worker: execute in order.*`;
-        emitArchitectToken(footnote, `Local Coder Worker (${workerModel})`, planRes.modelUsed);
-        this.writeLiveDialogue('ARCHITECT', 'Architect Blueprint', `${blueprintHeader(planRes.modelUsed)}${planContent}${footnote}`);
-
-        this.history.push({
-          role: 'user',
-          content: `[LEAD ARCHITECT DIRECTIVE — Brain 1 (${planRes.modelUsed})]\n${planContent}\n\n[ENGINE CHECKLIST]\n${checklist}\n\n[WORKER EXECUTION RULES]\n1. Start with task 1 immediately by calling a tool. Do not restate, summarize, or thank.\n2. Use search_codebase before reading whole files; read only the ranges you need. Inspection is preparation, not the deliverable - after at most 3-4 inspection calls, produce the output.\n3. If a task says write a document or file, create it with write_file - a design or plan is only done when the file exists on disk. Never overwrite an existing file the user did not name; write_file will refuse to replace a file you have not read this run.\n4. After edits, the engine's verification gate runs the verify command(s) and reports failures to you - fix them. Do not print whole files (cat / Get-Content) to verify; use a line count.\n5. When every task is done, STOP and reply "DONE:" with the files changed and how they were verified. Do not keep exploring the workspace after the checklist is complete.`
-        });
-
-        collab({
-          stage: 'plan',
-          activeRole: 'architect',
-          title: `Local Blueprint Formulated (${hybridTier.toUpperCase()}) — ${plan.tasks.length} tasks`,
-          message: `Local Architect (${planRes.modelUsed}) produced a ${plan.tasks.length}-task checklist. Local execution beginning on RTX 5090 ($0.00 cost).`
-        });
-
-        // Switch to local execution on subsequent turns
-        activeProvider = 'ollama';
-      } catch (planErr: any) {
-        const errorMsg = `⚠️ **Local Architect Notice**: Architect blueprint generation failed (${planErr.message || 'unknown error'}). Continuing directly with Local Coder Worker (\`${workerModel}\`).`;
-        notice(errorMsg);
-        this.writeLiveDialogue('ARCHITECT', 'Architect Notice', `> ${errorMsg}\n`);
-        collab({
-          stage: 'fallback',
-          title: 'Direct Local Execution Active',
-          message: `Directly running locally on RTX 5090 (${workerModel}) ($0.00 cost)!`
-        });
-        activeProvider = 'ollama';
-      }
-    }
-
-    // =========================================================================
     // WORKER EXECUTION
     // =========================================================================
     await workerLoop(MAX_TURNS);
 
     if (budgetExhausted && !signal.aborted) {
-      const usedK = Math.round((cloudTokensAccumulated + localTokensAccumulated) / 1000);
+      const usedK = Math.round(localTokensAccumulated / 1000);
       this.send('agent:token', {
         token: `\n\n*(Reached the ${Math.round(MAX_RUN_TOKENS / 1000)}K token budget for a single run — about ${usedK}K used across ${turnCount} turns. Stopping here rather than looping further. Ask me to continue if the work is unfinished.)*`,
         model
@@ -3426,191 +2759,11 @@ Rules: ${taskBudget}. Every edit task names its file(s). If the WORKSPACE CONTEX
       });
     }
 
-    // =========================================================================
-    // DUAL-BRAIN TURN 3: EVIDENCE-BASED REVIEW (BRAIN 1)
-    //
-    // The architect used to "verify" from the worker's own description of what
-    // it did, and it always approved. It now sees the actual diffs, the
-    // verification gate's results, and the checklist state - and it can send
-    // the worker back once with concrete issues.
-    // =========================================================================
-    const architectReview = async (): Promise<void> => {
-      this.send('agent:status', { state: 'thinking' });
-      collab({
-        stage: 'verified',
-        activeRole: 'architect',
-        title: `Architect Reviewing Evidence (${hybridTier.toUpperCase()})`,
-        message: `${architectModel} is reviewing the diffs and verification results...`
-      });
-
-      const editedRecords = [...state.edited.values()];
-      const diffs = editedRecords.map(e => summarizeDiff(e.path, e.oldContent, e.newContent));
-      const diffText = diffs.length
-        ? diffs.map(d => `• ${d.path}: +${d.added} / -${d.removed} lines (unified diff: ' ' context, '-' removed, '+' added)\n${d.excerpt.split('\n').map(l => `    ${l}`).join('\n')}`).join('\n')
-        : 'No files were modified.';
-      // Small changed files are shown whole: a reviewer reasons far better
-      // from the actual current file than from a hunk, and it is cheap.
-      const fullFiles = editedRecords
-        .filter(e => e.newContent && e.newContent.split('\n').length <= 150)
-        .slice(0, 4)
-        .map(e => `--- ${e.path} (current content, ${e.newContent.split('\n').length} lines) ---\n${e.newContent.split('\n').map((l, i) => `${i + 1}: ${l}`).join('\n')}`)
-        .join('\n\n');
-      const gateText = state.verifyReports.length
-        ? state.verifyReports.map(r => {
-            const line = `round ${r.round}: ${r.results.map(x => `${x.success ? 'PASS' : 'FAIL'} \`${x.command}\``).join(', ')}`;
-            if (r.passed) return line;
-            const failed = r.results.find(x => !x.success);
-            return `${line}\n    ${compactVerifyOutput(failed?.output || '', 12, 1200).split('\n').join('\n    ')}`;
-          }).join('\n')
-        : (state.edited.size ? 'No verification command was available for this project.' : 'Nothing to verify (no edits were made).');
-      const checklistText = state.plan ? renderChecklist(state.plan) : '(no checklist)';
-      const workerFinal = [...this.history].reverse().find(m => m.role === 'assistant' && m.content && !m.content.startsWith('### 🧠'))?.content || '';
-      const originalRequest = (this.history.find(m => m.role === 'user')?.content || '')
-        .replace(/\[WORKSPACE CONTEXT[^\]]*\][\s\S]*?\[\/WORKSPACE CONTEXT\]/g, '')
-        .replace(/\[ATTACHED FILE CONTEXT:[\s\S]*?\[\/ATTACHED FILE CONTEXT\]/g, '[attached file omitted]')
-        .trim()
-        .slice(0, 2000);
-
-      const verifyProtocol = `COLLABORATIVE VERIFICATION PROTOCOL (${hybridTier.toUpperCase()} TIER):
-You are the Lead Architect (Brain 1 • ${architectModel}) running locally on the user's NVIDIA RTX 5090. You gave the blueprint to the local coder worker (${workerModel}). Review the EVIDENCE below - the actual diffs and verification results - not the worker's description of its work.
-
-Respond in EXACTLY this structure:
-VERDICT: APPROVE   (or)   VERDICT: REVISE
-## Issues
-- <file:line — concrete problem>   (write "- none" if there are none)
-## Next Steps
-- <what the worker must do>   (only when REVISE)
-## Summary
-<2-4 sentences for the user: what changed, whether it verified, anything left>
-
-Rules of evidence:
-- The verification gate is authoritative. If it PASSED, the code compiles and typechecks: do NOT report syntax errors, unclosed braces, missing exports, or unresolved imports.
-- Diffs are unified format: lines starting with '-' no longer exist, '+' lines are the new code, ' ' lines are unchanged context. When the current content of a file is shown, judge from that, not from the diff.
-- A checklist task marked [x] with evidence is done. Do not invent requirements that are not in the original request.
-Say REVISE only for a real defect visible in the evidence: a failed verification, an unfinished checklist task that matters, or an edit that is wrong or incomplete against the request. Never REVISE for style or for things you merely cannot see. Be concise.`;
-
-      const verifyMessages: AgentMessage[] = [
-        { role: 'system', content: verifyProtocol },
-        {
-          role: 'user',
-          content: `### Original User Request\n${originalRequest}\n\n### Checklist State\n${checklistText}\n\n### Verification Gate\n${gateText}\n\n### Diffs Applied by the Worker\n${diffText}${fullFiles ? `\n\n### Current Content of Changed Files\n${fullFiles}` : ''}\n\n### Worker's Final Message\n${(workerFinal || '(none)').slice(0, 3000)}\n\nNow give your verdict.`
-        }
-      ];
-
-      const verifyHeader = (m: string) => `### 🧠 Local Architect Verification (${m}) ➔ @User & @Local Coder Worker\n\n`;
-      let reviewModel = architectModel;
-      let verifyContent = '';
-      try {
-        const res = await callArchitectStreaming(verifyMessages, architectModel, 'User & Local Coder Worker', verifyHeader, { think: architectShouldThink('review') });
-        verifyContent = res.content.trim();
-        reviewModel = res.modelUsed;
-        localTokensAccumulated += countTokens(verifyContent);
-      } catch (err: any) {
-        console.warn('[Dual-Brain] Verification call failed:', err?.message);
-      }
-
-      const lastGateFailed = state.verifyReports.length > 0 && !state.verifyReports[state.verifyReports.length - 1].passed;
-      if (!verifyContent || verifyContent.length < 20) {
-        verifyContent = lastGateFailed
-          ? `VERDICT: REVISE\n## Issues\n- The verification gate is still failing (see above).\n## Next Steps\n- Fix the reported errors and re-run the verify command.\n## Summary\nThe worker edited ${state.edited.size} file(s) but the project does not verify cleanly yet.`
-          : `VERDICT: APPROVE\n## Issues\n- none\n## Summary\n${state.edited.size ? `The worker edited ${state.edited.size} file(s)${state.verifyReports.length ? ' and the verification gate passed' : ''}.` : 'No files were changed; the worker answered directly.'}`;
-        emitArchitectToken(verifyContent, 'User & Local Coder Worker', reviewModel);
-      }
-
-      const verdict = parseReviewVerdict(verifyContent);
-      const needsRevise = (verdict.verdict === 'revise' || lastGateFailed)
-        && state.reviewRounds < maxReviewRounds
-        && !signal.aborted;
-
-      const footer = `\n\n---\n*⚡ Pure Local Dual-Brain • 100% Offline ($0.00) • NVIDIA RTX 5090${needsRevise ? ' • sending the worker back for one revision round' : ''}*`;
-      emitArchitectToken(footer, 'User & Local Coder Worker', reviewModel);
-      const fullVerifyMsg = `${verifyHeader(reviewModel)}${verifyContent}${footer}`;
-      this.history.push({ role: 'assistant', content: fullVerifyMsg });
-      this.writeLiveDialogue('ARCHITECT', 'Architect Verification', fullVerifyMsg);
-
-      if (!needsRevise) {
-        collab({
-          stage: 'verified',
-          activeRole: 'architect',
-          title: verdict.verdict === 'approve' && !lastGateFailed ? 'Task Verified (Local Dual-Brain • 100% Free)' : 'Review Complete — Issues Noted',
-          message: `Local Architect (${reviewModel}) reviewed ${state.edited.size} changed file(s) and ${state.verifyReports.length} verification round(s). 100% local GPU execution, $0.00 cost.`
-        });
-        return;
-      }
-
-      state.reviewRounds++;
-      const steps = [...verdict.nextSteps, ...verdict.issues].slice(0, 8);
-      this.history.push({
-        role: 'user',
-        content: `[ARCHITECT REVIEW — REVISE (round ${state.reviewRounds}/${maxReviewRounds})]\n${steps.length ? steps.map((s, i) => `${i + 1}. ${s}`).join('\n') : 'Fix the failed verification reported above.'}\n\nYou MUST act with tools in your next turn (write_file / edit_file / run_command). A text-only reply counts as no progress. When finished, reply "DONE:" with a summary.`
-      });
-      // The revision round gets a fresh continuation budget: the nudge keys
-      // from the first pass would otherwise silence every reminder, and the
-      // round could end three seconds later having done nothing.
-      const toolCallsAtRevise = state.toolCalls;
-      state.lastNudgeKey = '';
-      state.nudges = Math.min(state.nudges, 1);
-      state.intentNudges = Math.min(state.intentNudges, 1);
-      collab({
-        stage: 'escalate',
-        activeRole: 'architect',
-        title: `Architect Requested Revisions (${state.reviewRounds}/${maxReviewRounds})`,
-        message: steps[0] ? steps[0].slice(0, 140) : 'Verification must pass before sign-off.'
-      });
-
-      await workerLoop(REVISE_TURNS);
-      if (!signal.aborted) {
-        const gate = await runVerificationGate(false);
-        const stillFailing = gate.ran && !gate.passed;
-        const didWork = state.toolCalls > toolCallsAtRevise;
-        const signoff = !didWork
-          ? `⚠️ Revision round ended without any tool calls - the worker replied in text only, so the architect's issues above are still open. Ask me to continue and I will start from the first one.`
-          : stillFailing
-            ? `⚠️ Revision round complete, but the verification gate is still failing. The remaining errors are shown above - ask me to continue and I will keep fixing them.`
-            : `✅ Revision round complete${gate.ran ? ' and the verification gate passed' : ''}: ${state.edited.size} file(s) changed in total.`;
-        notice(signoff);
-        collab({
-          stage: 'verified',
-          activeRole: 'architect',
-          title: !didWork ? 'Revision Round Made No Changes' : stillFailing ? 'Revisions Applied — Verification Still Failing' : 'Task Verified After Revision (Local Dual-Brain • 100% Free)',
-          message: signoff
-        });
-      }
-    };
-
-    if (isHybrid && !signal.aborted) {
-      const didWork = state.toolCalls > 0 || state.edited.size > 0;
-      const reviewWanted = (hybridTier === 'medium' || hybridTier === 'high') && hybridPlan?.useArchitect !== false && didWork;
-      if (reviewWanted) {
-        try {
-          await architectReview();
-        } catch (verifyErr: any) {
-          console.warn('Architect verification notice:', verifyErr.message);
-          collab({
-            stage: 'verified',
-            title: `Task Completed (${hybridTier.toUpperCase()})`,
-            message: 'Local RTX 5090 worker delivered the solution; the architect review could not run.'
-          });
-        }
-      } else {
-        const directRun = hybridPlan?.useArchitect === false;
-        collab({
-          stage: 'verified',
-          title: directRun
-            ? (advisoryRun ? 'Analysis Delivered' : 'Response Complete')
-            : didWork ? `Task Completed (${hybridTier.toUpperCase()})` : 'Response Complete',
-          message: directRun
-            ? `Answered directly by the local worker on RTX 5090 (${state.toolCalls} inspection call(s), ${state.edited.size} file(s) changed).`
-            : didWork
-              ? 'Local RTX 5090 worker delivered the solution based on the architect directive.'
-              : 'Answered directly by the local worker on RTX 5090 (no edits, so no review round).'
-        });
-      }
-    } else if (!isHybrid && !signal.aborted && localTokensAccumulated > 0) {
+    if (!signal.aborted && localTokensAccumulated > 0) {
       collab({
         stage: 'verified',
         title: 'Local Execution Complete',
-        message: `Task completed 100% locally on NVIDIA RTX 5090${state.verifyReports.length ? ` • verification ${state.verifyReports[state.verifyReports.length - 1].passed ? 'passed' : 'failed'}` : ''}`
+        message: `Task completed 100% locally on ${this.gpuName}${state.verifyReports.length ? ` • verification ${state.verifyReports[state.verifyReports.length - 1].passed ? 'passed' : 'failed'}` : ''}`
       });
     }
 

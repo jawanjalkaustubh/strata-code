@@ -2,24 +2,67 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as electron from 'electron';
+import { execFileSync } from 'child_process';
+import { strataDataDir } from './presence';
 
 /**
  * Every machine-specific location the app needs, resolved in one place.
  *
  * Resolution order for each: environment override → the packaged layout
- * (relative to the folder holding Strata Code.exe) → the developer layout
- * on the original workstation (C:\AI_dev, D:\AntiGravity). The dev fallbacks
- * keep `npm start` working unchanged; an extracted zip never touches
- * them.
+ * (relative to the folder holding Strata Code.exe / Strata Code.app) → the
+ * per-user Strata data dir (macOS/Linux, written by scripts/mac/setup.sh) →
+ * the developer layout on the original workstation (C:\AI_dev, D:\AntiGravity).
+ * The dev fallbacks keep `npm start` working unchanged; an extracted zip never
+ * touches them.
  *
- * Packaged layout:
+ * Packaged layout (Windows):
  *   <root>\Strata Code.exe
  *   <root>\runtime\llama.cpp\llama-server.exe (+ DLLs; launch-server-8080.ps1 is for manual use only)
  *   <root>\runtime\coder-config.json         written by the installer
  *   <root>\models\*.gguf                     downloaded by the installer
+ *
+ * macOS / Linux layout (scripts/mac/setup.sh):
+ *   llama-server from Homebrew (/opt/homebrew/bin) or <data dir>/code/llama.cpp/
+ *   <data dir>/code/models/*.gguf
+ *   <data dir>/code/coder-config.json
+ * where <data dir> is ~/Library/Application Support/Strata (see presence.ts).
  */
 
 const app: any = (electron as any).app;
+
+export const IS_WIN = process.platform === 'win32';
+export const IS_MAC = process.platform === 'darwin';
+
+/** `llama-server.exe` on Windows, `llama-server` elsewhere. */
+export const CODER_SERVER_BINARY = IS_WIN ? 'llama-server.exe' : 'llama-server';
+
+/**
+ * A GUI app launched from Finder / the Dock gets the launchd PATH
+ * (/usr/bin:/bin:/usr/sbin:/sbin) - no Homebrew, no nvm, so `ollama`,
+ * `llama-server`, `node` and `npm` are all "not found" from inside the app
+ * even though they work in Terminal. Merge the login shell's PATH once at
+ * startup (same idea as the `fix-path` package), then make sure the usual
+ * Homebrew and local prefixes are present anyway. Windows keeps its PATH.
+ */
+let unixPathFixed = false;
+export function ensureUnixPath(): void {
+  if (IS_WIN || unixPathFixed) return;
+  unixPathFixed = true;
+  const parts = new Set<string>((process.env.PATH || '').split(':').filter(Boolean));
+  const shell = process.env.SHELL || '/bin/zsh';
+  try {
+    // `-ilc` so .zprofile/.zshrc (where brew shellenv usually lives) are read.
+    const out = execFileSync(shell, ['-ilc', 'echo -n "$PATH"'], { encoding: 'utf-8', timeout: 4000, stdio: ['ignore', 'pipe', 'ignore'] });
+    for (const p of String(out || '').trim().split(':')) if (p) parts.add(p);
+  } catch {}
+  for (const p of ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', path.join(os.homedir(), '.local', 'bin')]) parts.add(p);
+  process.env.PATH = Array.from(parts).join(':');
+}
+
+/** Per-user folder for this app's own downloads and config on macOS/Linux (`<strata data dir>/code`). */
+export function userCodeDir(): string {
+  return path.join(strataDataDir(), 'code');
+}
 
 function exists(p: string | undefined | null): p is string {
   try { return !!p && fs.existsSync(p); } catch { return false; }
@@ -48,20 +91,41 @@ export function isPackaged(): boolean {
   return !!(app && app.isPackaged);
 }
 
-/** Directory holding llama-server.exe and the launch script. */
+/** Directory holding the llama-server binary (and, on Windows, its DLLs and the launch script). */
 export function runtimeDir(): string | null {
-  return firstExisting([
+  const hasServer = (d: string | undefined) => exists(d) && exists(path.join(d as string, CODER_SERVER_BINARY));
+  const candidates: (string | undefined)[] = [
     process.env.STRATA_RUNTIME_DIR,
-    path.join(installRoot(), 'runtime', 'llama.cpp'),
-    'C:\\AI_dev\\llama.cpp'
-  ]);
+    path.join(installRoot(), 'runtime', 'llama.cpp')
+  ];
+  if (IS_WIN) {
+    candidates.push('C:\\AI_dev\\llama.cpp');
+  } else {
+    // scripts/mac/setup.sh installs llama.cpp with Homebrew; a hand-built copy goes under the data dir.
+    candidates.push(path.join(userCodeDir(), 'llama.cpp'), '/opt/homebrew/bin', '/usr/local/bin', path.join(os.homedir(), '.local', 'bin'));
+    const onPath = whichSync(CODER_SERVER_BINARY);
+    if (onPath) candidates.push(path.dirname(onPath));
+  }
+  return candidates.find(hasServer) || firstExisting(candidates);
 }
 
-/** The llama.cpp server binary itself. The app spawns it directly (no PowerShell wrapper) so it dies with the app. */
+/** `which <name>` on macOS/Linux (after ensureUnixPath); null when absent. */
+export function whichSync(name: string): string | null {
+  if (IS_WIN) return null;
+  try {
+    const out = execFileSync('which', [name], { encoding: 'utf-8', timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'] });
+    const first = String(out || '').split(/\r?\n/).map(v => v.trim()).find(Boolean);
+    return first && exists(first) ? first : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The llama.cpp server binary itself. The app spawns it directly (no shell wrapper) so it dies with the app. */
 export function coderServerExe(): string | null {
   const dir = runtimeDir();
   if (!dir) return null;
-  const p = path.join(dir, 'llama-server.exe');
+  const p = path.join(dir, CODER_SERVER_BINARY);
   return exists(p) ? p : null;
 }
 
@@ -74,7 +138,7 @@ export function modelsDir(): string | null {
   const candidates = [
     process.env.STRATA_MODELS_DIR,
     path.join(installRoot(), 'models'),
-    'C:\\AI_dev\\models\\qwen3-coder'
+    ...(IS_WIN ? ['C:\\AI_dev\\models\\qwen3-coder'] : [path.join(userCodeDir(), 'models')])
   ];
   return candidates.find(withGguf) || firstExisting(candidates);
 }
@@ -90,12 +154,21 @@ export interface CoderConfig {
   extraArgs?: string[];
 }
 
-/** Written by the installer according to the machine's VRAM. Absent on the dev machine. */
+/** Where the installer / setup script wrote coder-config.json, if anywhere. */
+export function coderConfigPath(): string | null {
+  return firstExisting([
+    process.env.STRATA_CODER_CONFIG,
+    path.join(installRoot(), 'runtime', 'coder-config.json'),
+    ...(IS_WIN ? [] : [path.join(userCodeDir(), 'coder-config.json')])
+  ]);
+}
+
+/** Written by the installer according to the machine's VRAM (or unified memory). Absent on the dev machine. */
 export function coderConfig(): CoderConfig {
-  const p = path.join(installRoot(), 'runtime', 'coder-config.json');
+  const p = coderConfigPath();
   try {
     // PowerShell 5.1 writes UTF-8 with a BOM; JSON.parse rejects it.
-    if (exists(p)) return JSON.parse(fs.readFileSync(p, 'utf-8').replace(/^﻿/, '')) as CoderConfig;
+    if (p) return JSON.parse(fs.readFileSync(p, 'utf-8').replace(/^﻿/, '')) as CoderConfig;
   } catch {}
   return {};
 }
@@ -142,6 +215,12 @@ export const CODER_ALIAS = 'Qwen3-Coder-30B-A3B-Instruct';
  *  -b / -ub          large prefill batches; prompt processing is the bottleneck
  *  --cache-reuse     salvage KV after the middle of the prompt changes
  *  sampling          Qwen3-Coder model-card defaults
+ *
+ * The same list works on Apple Silicon (Metal): -ngl 99 offloads every layer
+ * to the GPU, flash attention and the q8_0 KV cache are supported by the Metal
+ * backend, and the MoE model's 3.3B active parameters make it fast there too.
+ * The context size comes from coder-config.json, which scripts/mac/setup.sh
+ * sizes from the machine's unified memory.
  */
 export function coderServerArgs(model: string, cfg: CoderConfig = coderConfig()): string[] {
   const ctx = cfg.ctx && Number.isFinite(cfg.ctx) ? cfg.ctx : CODER_DEFAULT_CTX;

@@ -64,8 +64,37 @@ gh release create v1.0.0 release\Strata-Code-Windows-x64.zip release\Strata-Code
 ## Later builds
 
 Bump `version` in `package.json`, commit, run `package.ps1`, then
-`gh release create v1.0.1 …` (or the web UI). Testers re-download only
+`gh release create v1.1.0 …` (or the web UI). Testers re-download only
 the zip; their models and Ollama stay installed, and `Install.bat` skips them.
+
+### 1.1.0 (2026-09-21)
+
+Tag `v1.1.0` is on `main`; the GitHub release is created with these notes and
+the Windows zip attached from the PC:
+
+```powershell
+cd D:\AntiGravity\strata
+git checkout main; git pull
+powershell -ExecutionPolicy Bypass -File installer\package.ps1
+gh release upload v1.1.0 release\Strata-Code-Windows-x64.zip release\Strata-Code-Windows-x64.zip.sha256
+```
+
+Notes:
+
+> **One model per turn.** The dual-brain (hybrid) mode is gone: the architect
+> and the coder never fit on one card together, so the coder plans, edits and
+> verifies its own work with two or three fewer generations per turn. Pick the
+> coder or the general model in the title bar.
+>
+> **macOS (Apple Silicon)** from source: `scripts/mac/setup.sh` installs
+> Ollama and llama.cpp with Homebrew, downloads the models sized for the
+> machine's unified memory, builds the app and puts Strata Code in
+> Launchpad and on the Desktop. See `MACOS.md`.
+>
+> **Also:** the status bar names the GPU the probe found instead of a
+> hardcoded RTX 5090; the Windows installer text no longer describes the
+> hybrid mode. Windows requirements and install steps are unchanged; an
+> existing install just needs the new zip.
 
 ## Release notes to paste
 
@@ -87,8 +116,8 @@ the zip; their models and Ollama stay installed, and `Install.bat` skips them.
 ## Known limits
 
 - NVIDIA only; no AMD/Intel/CPU fallback.
-- One model resident at a time on a 32 GB card; the app routes around it and
-  says so. A 24 GB card gets the Q4_K_M coder at 32K context.
+- One model resident at a time on a 32 GB card; switching model reloads. A
+  24 GB card gets the Q4_K_M coder at 32K context.
 - Unsigned executable (SmartScreen warning). Code signing needs a certificate.
 - The vision model from the photo project, if present in Ollama, blocks the
   coder until that app releases it or **Free GPU** is clicked.

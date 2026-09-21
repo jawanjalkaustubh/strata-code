@@ -9,3 +9,7 @@ agent-leftovers-*/
 release/
 strata-live-session.md
 .claude/launch.json
+models/
+runtime/
+setup-mac.log
+*.icns
