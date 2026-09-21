@@ -277,7 +277,7 @@ export function extractQueryTerms(prompt: string, extraTerms: string[] = [], max
     const isIdentifier = /[a-z][A-Z]/.test(w) || /_/.test(w) || /\d/.test(w) || /[.]/.test(w);
     if (isIdentifier) {
       bump(w, 3);
-      // Sub-words of an identifier catch near-misses: "hybridMode" also finds "hybrid".
+      // Sub-words of an identifier catch near-misses: "cacheMode" also finds "cache".
       for (const part of w.split(/(?<=[a-z0-9])(?=[A-Z])|[_.\-]/)) {
         const p = part.toLowerCase();
         if (p.length >= 4 && !STOPWORDS.has(p)) bump(p, 1);

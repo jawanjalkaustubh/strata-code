@@ -101,10 +101,7 @@ export const ModelManagerModal: React.FC<ModelManagerModalProps> = ({
   const [customTag, setCustomTag] = useState('');
   const [deleteConfirmTag, setDeleteConfirmTag] = useState<string | null>(null);
 
-  const [providerConfig, setProviderConfig] = useState<ProviderConfig>({
-    activeProvider: 'ollama',
-    hybridMode: false
-  });
+  const [providerConfig, setProviderConfig] = useState<ProviderConfig>({ activeProvider: 'ollama' });
 
   useEffect(() => {
     if (isOpen && (window as any).api?.getProviderConfig) {

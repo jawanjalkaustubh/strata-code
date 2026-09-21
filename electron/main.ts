@@ -318,11 +318,8 @@ function getStoredProviderConfig() {
   } catch {}
   return {
     activeProvider: 'ollama',
-    hybridMode: false,
-    hybridArchitectModel: 'qwen3.8:27b',
     generalModel: 'qwen3.8:27b',
-    codingModel: 'Qwen3-Coder-30B-A3B-Instruct',
-    allowPaidApis: false
+    codingModel: 'Qwen3-Coder-30B-A3B-Instruct'
   };
 }
 
@@ -589,7 +586,7 @@ async function startCoderServer(reason: string): Promise<boolean> {
     emitCoderEvent('error', detail);
     return false;
   }
-  // Our own leftover Ollama model (e.g. the architect from a local-only run)
+  // Our own leftover Ollama model (e.g. the general model from an earlier run)
   // may still be resident. Evicting it only costs us a reload later; a model
   // a live sibling lists is kept (releaseOllamaVram checks presence).
   try {

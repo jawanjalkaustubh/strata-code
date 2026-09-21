@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
 import { X, Sparkles, Cpu, HardDrive, ShieldCheck, Code2, Zap, Bug, ExternalLink } from 'lucide-react';
 
-import { SystemInfo, HybridTier } from '../types';
+import { SystemInfo } from '../types';
 import { STRATA_ICON } from '../assets/logo';
 import { SUPPORT, openExternal } from '../support';
 
@@ -10,19 +10,13 @@ interface AboutModalProps {
   onClose: () => void;
   selectedModel: string;
   systemInfo?: SystemInfo | null;
-  isHybrid?: boolean;
-  hybridTier?: HybridTier;
-  architectModel?: string;
 }
 
 export const AboutModal: React.FC<AboutModalProps> = ({ 
   isOpen, 
   onClose, 
   selectedModel, 
-  systemInfo,
-  isHybrid = false,
-  hybridTier = 'medium',
-  architectModel
+  systemInfo
 }) => {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -41,7 +35,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({
         onClick={(e) => e.stopPropagation()}
       >
         {/* Glow Header */}
-        <div className={`h-32 bg-gradient-to-br ${isHybrid ? 'from-role-architect-950/40 via-role-user-950/30' : 'from-role-worker-950/40 via-state-info-950/30'} to-studio-surface relative flex items-center justify-center border-b border-studio-border`}>
+        <div className="h-32 bg-gradient-to-br from-role-worker-950/40 via-state-info-950/30 to-studio-surface relative flex items-center justify-center border-b border-studio-border">
           <button
             onClick={onClose}
             className="absolute top-3 right-3 p-1.5 rounded-full hover:bg-studio-panel text-slate-400 hover:text-slate-200 transition"
@@ -53,13 +47,13 @@ export const AboutModal: React.FC<AboutModalProps> = ({
             <img 
               src={STRATA_ICON} 
               alt="Strata" 
-              className={`w-14 h-14 object-contain ${isHybrid ? 'drop-shadow-[0_0_16px_rgba(168,85,247,0.5)]' : 'drop-shadow-[0_0_16px_rgba(45,212,191,0.5)]'} mb-1.5`} 
+              className="w-14 h-14 object-contain drop-shadow-[0_0_16px_rgba(45,212,191,0.5)] mb-1.5" 
             />
             <h2 className="text-lg font-extrabold tracking-wider bg-gradient-to-r from-role-worker-200 via-state-info-200 to-white bg-clip-text text-transparent">
               STRATA CODE
             </h2>
-            <span className={`text-micro ${isHybrid ? 'text-role-architect-300/90' : 'text-role-worker-300/80'} font-mono tracking-wide`}>
-              v1.0.0 • {isHybrid ? `⚡ Dual-Model Hybrid (${(hybridTier || 'medium').toUpperCase()})` : '🛡️ 100% Sovereign Local AI Studio'}
+            <span className="text-micro text-role-worker-300/80 font-mono tracking-wide">
+              v1.0.0 • 🛡️ 100% Sovereign Local AI Studio
             </span>
           </div>
         </div>
@@ -94,32 +88,18 @@ export const AboutModal: React.FC<AboutModalProps> = ({
 
             <div className="flex items-center justify-between p-2 rounded-card bg-studio-panel/50 border border-studio-border">
               <div className="flex items-center space-x-2 text-slate-300">
-                <Sparkles size={14} className={isHybrid ? "text-role-tool-400" : "text-role-architect-400"} />
-                <span>{isHybrid ? 'Dual-Brain Models' : 'Active Model'}</span>
+                <Sparkles size={14} className="text-role-architect-400" />
+                <span>Active Model</span>
               </div>
-              {isHybrid ? (
-                <div className="text-right">
-                  <div className="text-micro font-mono text-role-architect-300 font-medium">🧠 {architectModel || 'qwen3.8:27b'} (Architect)</div>
-                  <div className="text-micro font-mono text-state-ok-300 font-medium">💻 {selectedModel} (Coder Worker)</div>
-                </div>
-              ) : (
-                <span className="font-mono text-slate-200 font-medium">{selectedModel}</span>
-              )}
+              <span className="font-mono text-slate-200 font-medium">{selectedModel}</span>
             </div>
 
             <div className="flex items-center justify-between p-2 rounded-card bg-studio-panel/50 border border-studio-border">
               <div className="flex items-center space-x-2 text-slate-300">
-                <ShieldCheck size={14} className={isHybrid ? "text-role-architect-400" : "text-role-user-400"} />
-                <span>{isHybrid ? 'Execution Mode' : 'Privacy Mode'}</span>
+                <ShieldCheck size={14} className="text-role-user-400" />
+                <span>Privacy Mode</span>
               </div>
-              {isHybrid ? (
-                <span className="text-role-architect-300 font-semibold flex items-center space-x-1">
-                  <Cpu size={12} className="text-role-architect-400" />
-                  <span>Local Dual-Brain ({(hybridTier || 'medium').toUpperCase()}: {systemInfo?.gpu || 'Local GPU'})</span>
-                </span>
-              ) : (
-                <span className="text-state-ok-400 font-semibold">100% Offline / Local</span>
-              )}
+              <span className="text-state-ok-400 font-semibold">100% Offline / Local ({systemInfo?.gpu || 'Local GPU'})</span>
             </div>
           </div>
 
@@ -141,9 +121,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({
 
           {/* Footer */}
           <div className="pt-2 text-center text-micro text-slate-400">
-            {isHybrid
-              ? 'Powered by 100% Local Dual-Brain Architecture (Ollama & llama-server) on your local GPU.'
-              : 'Powered by 100% offline local GPU inference & Monaco Editor engine.'}
+            Powered by 100% offline local GPU inference & Monaco Editor engine.
           </div>
         </div>
       </div>
