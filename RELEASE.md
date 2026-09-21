@@ -67,19 +67,24 @@ Bump `version` in `package.json`, commit, run `package.ps1`, then
 `gh release create v1.1.0 …` (or the web UI). Testers re-download only
 the zip; their models and Ollama stay installed, and `Install.bat` skips them.
 
+**The public notes live in `RELEASE-NOTES.md`** at the repo root - that is the
+file to pass to `--notes-file`. This document is internal: it has local paths
+and the legal checklist, so it must never become a release body.
+
 ### 1.1.0 (2026-09-21)
 
-Tag `v1.1.0` is on `main`; the GitHub release is created with these notes and
-the Windows zip attached from the PC:
+Tag `v1.1.0` is on `main`; the GitHub release carries `RELEASE-NOTES.md` and
+the Windows zip built on the PC:
 
 ```powershell
 cd D:\AntiGravity\strata
 git checkout main; git pull
 powershell -ExecutionPolicy Bypass -File installer\package.ps1
-gh release upload v1.1.0 release\Strata-Code-Windows-x64.zip release\Strata-Code-Windows-x64.zip.sha256
+gh release create v1.1.0 release\Strata-Code-Windows-x64.zip release\Strata-Code-Windows-x64.zip.sha256 `
+  --target main --title "Strata Code 1.1.0" --notes-file RELEASE-NOTES.md
 ```
 
-Notes:
+Summary of the notes:
 
 > **One model per turn.** The dual-brain (hybrid) mode is gone: the architect
 > and the coder never fit on one card together, so the coder plans, edits and
