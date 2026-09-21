@@ -55,7 +55,7 @@ function Step([string]$msg) { Write-Host ""; Log "=== $msg ===" "Cyan" }
 function Fail([string]$msg) { Log "ERROR: $msg" "Red"; Write-Host ""; Write-Host "Install did not complete. See install.log. You can re-run Install.bat; downloads resume." -ForegroundColor Yellow; exit 1 }
 
 Write-Host ""
-Write-Host "  STRATA CODE - LOCAL DUAL-BRAIN CODING STUDIO - INSTALLER" -ForegroundColor Cyan
+Write-Host "  STRATA CODE - LOCAL AI CODING STUDIO - INSTALLER" -ForegroundColor Cyan
 Write-Host "  Install folder: $Root" -ForegroundColor DarkGray
 if ($DryRun) { Write-Host "  DRY RUN: nothing will be downloaded or changed." -ForegroundColor Yellow }
 Write-Host ""
@@ -272,7 +272,7 @@ else {
             $s = $wsh.CreateShortcut($lnk)
             $s.TargetPath = $AppExe
             $s.WorkingDirectory = $Root
-            $s.Description = "Strata Code - Local Dual-Brain AI Coding Studio"
+            $s.Description = "Strata Code - Local AI Coding Studio"
             $s.IconLocation = "$icon,0"
             $s.Save()
             Log "Shortcut: $lnk" "Green"
