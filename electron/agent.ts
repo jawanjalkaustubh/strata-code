@@ -824,6 +824,21 @@ export class AgentEngine {
     return freed;
   }
 
+  /**
+   * Resolves once none of `models` is listed by /api/ps any more, or after `capMs`. On Apple
+   * Silicon the runner's memory is back the moment it exits, so this replaces a fixed 2.5 s
+   * sleep before the coder loads (Windows keeps the sleep: the CUDA driver frees VRAM lazily).
+   */
+  async waitOllamaUnloaded(models: string[], capMs = 2500): Promise<void> {
+    const deadline = Date.now() + capMs;
+    while (Date.now() < deadline) {
+      const ps = await this.fetchJson('http://127.0.0.1:11434/api/ps', 500);
+      const names: string[] = Array.isArray(ps?.models) ? ps.models.map((m: any) => String(m.name || m.model || '')) : [];
+      if (ps && !models.some(m => names.includes(m))) return;
+      await new Promise(r => setTimeout(r, 100));
+    }
+  }
+
   /** POST keep_alive:0 straight to the wire (no /api/version probe first), time-bounded. */
   async unloadOllamaModel(model: string, timeoutMs = 2000): Promise<boolean> {
     try {
