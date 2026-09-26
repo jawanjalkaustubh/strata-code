@@ -62,8 +62,7 @@ first launch.
 
   | Unified memory | Coder | Context | General model |
   |---|---|---|---|
-  | 64 GB+ | Q6_K (25 GB) | 65 536 | qwen3.8:27b |
-  | 48-63 GB | Q6_K | 32 768 | qwen3.8:27b |
+  | 48 GB+ | Q6_K (25 GB) | 65 536 | qwen3.8:27b |
   | 36-47 GB | Q4_K_M (18.6 GB) | 65 536 | qwen3.8:27b |
   | 32-35 GB | Q4_K_M | 32 768 | qwen3.8:27b |
   | 24-31 GB | Q4_K_M | 16 384 | qwen3:8b (raise the wired limit, see below) |

@@ -220,7 +220,9 @@ export const CODER_ALIAS = 'Qwen3-Coder-30B-A3B-Instruct';
  * to the GPU, flash attention and the q8_0 KV cache are supported by the Metal
  * backend, and the MoE model's 3.3B active parameters make it fast there too.
  * The context size comes from coder-config.json, which scripts/mac/setup.sh
- * sizes from the machine's unified memory.
+ * sizes from the machine's unified memory. Metal takes -ub 2048: llama-bench on
+ * an M5 Max (Q6_K, pp4096) read 2622 tok/s against 2432 at 1024, generation
+ * unchanged, for ~280 MB more compute buffer.
  */
 export function coderServerArgs(model: string, cfg: CoderConfig = coderConfig()): string[] {
   const ctx = cfg.ctx && Number.isFinite(cfg.ctx) ? cfg.ctx : CODER_DEFAULT_CTX;
@@ -232,7 +234,7 @@ export function coderServerArgs(model: string, cfg: CoderConfig = coderConfig())
     '-ngl', '99',
     '-c', String(ctx),
     '-b', '4096',
-    '-ub', '1024',
+    '-ub', IS_MAC ? '2048' : '1024',
     '--cache-type-k', 'q8_0',
     '--cache-type-v', 'q8_0',
     '--flash-attn', 'on',

@@ -114,8 +114,10 @@ case "$CODER" in
   none)   CODER_NAME=""; CODER_BYTES=0 ;;
   *) fail "--coder must be Q6_K, Q4_K_M or none" ;;
 esac
+# Q6_K at 64K on 48 GB: 23.1 GiB weights + 3.2 GiB q8 KV + 0.6 GiB compute = 27.5 GiB of the
+# ~38 GiB Metal working set (measured on an M5 Max); the app evicts Ollama before the coder loads.
 CTX=65536
-if [ "$CODER" = "Q6_K" ] && [ "$MEM_GB" -lt 64 ]; then CTX=32768; fi
+if [ "$CODER" = "Q6_K" ] && [ "$MEM_GB" -lt 48 ]; then CTX=32768; fi
 if [ "$CODER" = "Q4_K_M" ] && [ "$MEM_GB" -lt 36 ]; then CTX=32768; fi
 if [ "$CODER" = "Q4_K_M" ] && [ "$MEM_GB" -lt 32 ]; then CTX=16384; fi
 [ -n "$CODER_NAME" ] && log "Coder model: $CODER ($(( CODER_BYTES / 1024 / 1024 / 1024 )) GB), context $CTX tokens"
