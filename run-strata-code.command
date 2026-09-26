@@ -19,8 +19,10 @@ if [ ! -d node_modules/electron/dist ]; then
   echo "[*] First run: installing dependencies..."
   npm install --no-audit --no-fund || { read -r -p "npm install failed. Press Return to close." _; exit 1; }
 fi
-if [ ! -f dist-electron/main.js ]; then
-  echo "[*] First run: building..."
+# Build on the first run, and again whenever the sources are newer than the build (after a
+# `git pull`), so the app never runs yesterday's code.
+if [ ! -f dist-electron/main.js ] || [ -n "$(find electron src index.html package.json vite.config.ts -newer dist-electron/main.js 2>/dev/null | head -1)" ]; then
+  echo "[*] Building..."
   npm run build || { read -r -p "npm run build failed. Press Return to close." _; exit 1; }
 fi
 
