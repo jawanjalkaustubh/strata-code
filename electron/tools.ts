@@ -644,7 +644,8 @@ export class ToolExecutor {
           cwd: this.workspaceDir,
           maxBuffer: 10 * 1024 * 1024, // 10MB buffer
           windowsHide: true,
-          env: { ...process.env, PYTHONIOENCODING: 'utf-8', CI: '1', FORCE_COLOR: '0', NO_COLOR: '1' }
+          // GIT_TERMINAL_PROMPT=0: git asks for credentials on the tty, not stdin; fail instead.
+          env: { ...process.env, PYTHONIOENCODING: 'utf-8', CI: '1', FORCE_COLOR: '0', NO_COLOR: '1', ...(process.platform === 'win32' ? {} : { GIT_TERMINAL_PROMPT: '0' }) }
         },
         (error, stdout, stderr) => {
           clearTimeout(timer);
@@ -669,6 +670,9 @@ export class ToolExecutor {
         }
       );
       trackChild(child, 'tool');
+      // macOS / Linux twin of -NonInteractive: stdin at EOF, so a prompt (a git
+      // editor, `read`, a y/n question) fails at once instead of waiting out the timeout.
+      if (process.platform !== 'win32') child.stdin?.end();
       const timer = setTimeout(() => {
         timedOut = true;
         killTree(child.pid).then(() => { try { child.kill(); } catch {} });
