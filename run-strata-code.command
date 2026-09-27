@@ -40,14 +40,15 @@ running=0
 pgrep -af "^$(printf '%s' "$electron_bin" | sed 's/[][\.*^$+?(){}|]/\\&/g')( |\$)" >/dev/null 2>&1 && running=1
 [ "$running" = 1 ] && echo "[*] Strata Code is already running: no install or build now."
 
-# package.json or its lock changed (a `git pull`): install again, then build. npm records an install
-# in node_modules/.package-lock.json but leaves that file alone when nothing changed, so it is
-# touched here to date this one.
+# package.json or its lock changed (a `git pull`): install again, then build. --no-save: a lock out
+# of step with package.json would otherwise be rewritten, leaving the checkout modified and the next
+# `git pull` refused. npm records an install in node_modules/.package-lock.json but leaves that file
+# alone when nothing changed, so it is touched here to date this one.
 reinstalled=0
 if [ "$running" = 0 ] && [ -d node_modules ] && { [ package.json -nt node_modules/.package-lock.json ] || [ package-lock.json -nt node_modules/.package-lock.json ]; }; then
   echo "[*] Dependencies changed: installing..."
   notify "Installing updated dependencies (a minute or two)"
-  npm install --no-audit --no-fund || { notify "npm install failed. Details: $launch_log"; read -r -p "npm install failed. Press Return to close." _; exit 1; }
+  npm install --no-audit --no-fund --no-save || { notify "npm install failed. Details: $launch_log"; read -r -p "npm install failed. Press Return to close." _; exit 1; }
   touch node_modules/.package-lock.json; reinstalled=1
 fi
 # Build on the first run, and again whenever the sources are newer than the build (after a
