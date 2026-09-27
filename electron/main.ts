@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, Menu } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, Menu, powerSaveBlocker } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -353,7 +353,8 @@ function createWindow() {
       // Chromium throttles timers and rAF to ~1Hz in unfocused windows. With the
       // agent streaming for minutes at a time, alt-tabbing away froze the token
       // stream and the elapsed-time counter until the window regained focus.
-      backgroundThrottling: false,
+      // macOS switches throttling off only while a run is active (holdForRun / releaseForRun).
+      backgroundThrottling: IS_MAC && !runHeld,
       // Renderer never touches Node APIs directly - everything goes through the
       // contextBridge in preload.cjs - so the OS sandbox can stay on.
       sandbox: true
@@ -520,6 +521,11 @@ async function stopCoderServer(reason: string): Promise<number[]> {
   return killed;
 }
 
+/** After an Ollama unload, before the coder loads: a fixed 2.5 s on Windows, poll /api/ps on macOS. */
+function waitForOllamaRelease(freed: string[]): Promise<void> {
+  return IS_MAC ? agent.waitOllamaUnloaded(freed, 2500) : sleep(2500);
+}
+
 /** Idle stop: only the server THIS app spawned, only while no run is active. Never the foreign-:8080 kill. */
 async function stopIdleCoder(): Promise<void> {
   const child = coderChild;
@@ -593,7 +599,7 @@ async function startCoderServer(reason: string): Promise<boolean> {
     const freed = await agent.releaseOllamaVram(false);
     if (freed.length) {
       console.log(`[Coder Server] Unloaded ${freed.join(', ')} from Ollama first.`);
-      await sleep(2500);
+      await waitForOllamaRelease(freed);
     }
   } catch {}
   if (quitting) return false;
@@ -681,7 +687,10 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(async () => {
     // macOS in development runs inside the stock Electron bundle: the Dock icon is set here so it never shows Electron's (the packaged .app carries its own icns).
     if (IS_MAC && !app.isPackaged) app.dock?.setIcon(path.join(__dirname, '../assets/strata-code-sc-256.png'));
-    Menu.setApplicationMenu(null);
+    // macOS routes Cmd+C/V/X/A/Z in text fields and Cmd+Q/H through the menu bar, so a null menu
+    // left the chat box without copy and paste. App and Edit only: no View menu, so no Cmd+R
+    // reload mid-run (the reason the menu is null on Windows).
+    Menu.setApplicationMenu(IS_MAC ? Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }]) : null);
     await createWindow();
 
     // Hardware detection runs AFTER the window exists and never blocks it.
@@ -711,6 +720,9 @@ if (!app.requestSingleInstanceLock()) {
     }
 
     app.on('activate', () => {
+      // Closing the window quits through before-quit's windowless shutdown (up to 5 s); a Dock
+      // click then must not open a window that the final app.quit() closes without a prompt.
+      if (quitting) return;
       if (BrowserWindow.getAllWindows().length === 0) void createWindow();
     });
   }).catch((err: any) => {
@@ -720,9 +732,10 @@ if (!app.requestSingleInstanceLock()) {
   });
 }
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
+// Quit on every platform, macOS included. Staying in the Dock without a window kept the run
+// editing files unseen and llama-server holding ~26 GB of unified memory for its 20 idle
+// minutes; the close prompt already says closing stops the agent. Photo and Tune quit too.
+app.on('window-all-closed', () => app.quit());
 
 /**
  * Bounded shutdown (shared Strata shape): everything async and time-capped,
@@ -1183,13 +1196,56 @@ ipcMain.handle('legal:decline', async () => {
   return { success: true };
 });
 
+/**
+ * macOS only, for the length of a run: a power assertion so an unattended run does not stop
+ * when the Mac idle-sleeps (the default is after a few minutes) and App Nap leaves the app
+ * alone, and renderer timers run at full rate while the window is behind another app. Between
+ * runs Chromium's background throttling is back on, so an idle window costs nothing.
+ * Counted: a new run starts before the aborted one has finished. A run waiting for a tool
+ * approval (Review Mode) does not count: that wait has no time limit, and a run left on it kept
+ * the Mac awake indefinitely. Tool calls run one at a time, so a run waits for at most one
+ * approval and the hold is on exactly while some run is not waiting. Derived from the two
+ * counts, never toggled per event, so no order of events can release it twice or leak it.
+ */
+let runsInFlight = 0;
+let runsAwaitingApproval = 0;
+let runHeld = false;
+let powerBlockerId: number | null = null;
+function syncRunHold(): void {
+  const want = IS_MAC && runsInFlight > runsAwaitingApproval;
+  if (want === runHeld) return;
+  runHeld = want;
+  if (want) {
+    try { powerBlockerId = powerSaveBlocker.start('prevent-app-suspension'); } catch {}
+    try { mainWindow?.webContents.setBackgroundThrottling(false); } catch {}
+  } else {
+    if (powerBlockerId !== null) { try { powerSaveBlocker.stop(powerBlockerId); } catch {} powerBlockerId = null; }
+    try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.setBackgroundThrottling(true); } catch {}
+  }
+}
+function holdForRun(): void {
+  runsInFlight++;
+  syncRunHold();
+}
+function releaseForRun(): void {
+  runsInFlight = Math.max(0, runsInFlight - 1);
+  syncRunHold();
+}
+// Each approval wait, reported when it starts and when it settles: answered, rejected or cut
+// short by stop(). The settling call comes before the run can go on, so before its release.
+agent.onApprovalWait = (waiting) => {
+  runsAwaitingApproval = Math.max(0, runsAwaitingApproval + (waiting ? 1 : -1));
+  syncRunHold();
+};
+
 ipcMain.handle('agent:start', async (_e, prompt: string, model: string, autoMode: boolean, taskMode: string = 'coding', editorContext?: any, images?: string[]) => {
   const legal = agreementState();
   if (legal.available && !legal.accepted) {
     return { started: false, error: 'The License Agreement has not been accepted. Accept it to use the agent.' };
   }
   if (quitting) return { started: false, error: 'Strata Code is quitting.' };
-  void agent.run(prompt, model, autoMode, taskMode, editorContext, images);
+  holdForRun();
+  void agent.run(prompt, model, autoMode, taskMode, editorContext, images).finally(releaseForRun);
   return { started: true };
 });
 
@@ -1341,7 +1397,7 @@ ipcMain.handle('engine:take-gpu', async () => {
   if (quitting) return { success: false, error: 'quitting' };
   try {
     const freed = await agent.releaseOllamaVram(true);
-    if (freed.length) await new Promise(r => setTimeout(r, 2500));
+    if (freed.length) await waitForOllamaRelease(freed);
     const started = await startCoderServer('take-gpu');
     return { success: true, freed, started };
   } catch (err: any) {

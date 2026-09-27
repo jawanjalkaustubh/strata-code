@@ -18,11 +18,16 @@ for s in 16 32 64 128 256; do
 done
 iconutil -c icns "$ICONSET" -o assets/strata-code.icns
 
+# Ship only what the main process needs: package.json, dist/, dist-electron/, assets/ (the same
+# list as installer/package.ps1). node_modules is out wholesale: main.js is bundled by Vite.
 npx @electron/packager . "Strata Code" \
   --platform=darwin --arch="$ARCH" --out=release --overwrite \
   --icon=assets/strata-code.icns \
   --app-bundle-id=com.kaustubhjawanjal.stratacode \
   --ignore='^/(release|installer|scratchpad|.*\.ps1|.*\.bat|.*\.vbs)' \
+  --ignore='^/(node_modules|src|electron|scripts|public|assets/.*\.py|\.git|\.claude|backup-|agent-leftovers-)' \
+  --ignore='^/(index\.html|tsconfig\.json|vite\.config\.ts|tailwind\.config\.js|postcss\.config\.js|package-lock\.json|\.gitignore|\.DS_Store)$' \
+  --ignore='^/((?!EULA\.md$)[^/]+\.md|[^/]+\.py|[^/]+\.log|[^/]+\.command)$' \
   --extra-resource=EULA.md
 
 cd release && ditto -c -k --keepParent "Strata Code-darwin-$ARCH/Strata Code.app" "Strata-Code-macOS-$ARCH.zip"

@@ -139,6 +139,8 @@ export class AgentEngine {
   onCoderNeeded?: (reason: string) => Promise<boolean>;
   /** Set by main.ts: pid of the coder process this app spawned, if it is alive. */
   coderChildPid?: () => number | null;
+  /** Set by main.ts: true when a run starts waiting for a tool approval, false once that approval settles (answer or stop()). */
+  onApprovalWait?: (waiting: boolean) => void;
 
   /** Runs in flight (a new run aborts the previous one, so this is briefly 2). */
   private activeRuns = 0;
@@ -822,6 +824,21 @@ export class AgentEngine {
       console.log(`[VRAM Arbiter] Evicted from Ollama: ${freed.join(', ')}`);
     }
     return freed;
+  }
+
+  /**
+   * Resolves once none of `models` is listed by /api/ps any more, or after `capMs`. On Apple
+   * Silicon the runner's memory is back the moment it exits, so this replaces a fixed 2.5 s
+   * sleep before the coder loads (Windows keeps the sleep: the CUDA driver frees VRAM lazily).
+   */
+  async waitOllamaUnloaded(models: string[], capMs = 2500): Promise<void> {
+    const deadline = Date.now() + capMs;
+    while (Date.now() < deadline) {
+      const ps = await this.fetchJson('http://127.0.0.1:11434/api/ps', 500);
+      const names: string[] = Array.isArray(ps?.models) ? ps.models.map((m: any) => String(m.name || m.model || '')) : [];
+      if (ps && !models.some(m => names.includes(m))) return;
+      await new Promise(r => setTimeout(r, 100));
+    }
   }
 
   /** POST keep_alive:0 straight to the wire (no /api/version probe first), time-bounded. */
@@ -2352,9 +2369,11 @@ WORKING METHOD (follow exactly):
       // If NOT auto mode, prompt user for approval
       if (!autoMode) {
         this.send('agent:status', { state: 'waiting_approval' });
+        // No time limit on this wait, so main.ts drops the macOS run hold meanwhile.
+        this.onApprovalWait?.(true);
         const approved = await new Promise<boolean>((resolve) => {
           this.pendingApprovals.set(callId, resolve);
-        });
+        }).finally(() => this.onApprovalWait?.(false));
 
         if (!approved) {
           this.history.push({
