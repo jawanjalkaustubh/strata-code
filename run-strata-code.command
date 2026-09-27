@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Strata Code - macOS launcher. Double-click in Finder (opens Terminal) or run
-# from a shell. First run: installs dependencies and builds; every run: makes
-# sure Ollama answers, then starts the app. The coder llama-server on port
+# from a shell. First run, and after a `git pull`: installs dependencies and
+# builds; every run: makes sure Ollama answers, then starts the app. The coder llama-server on port
 # 8080 is started by the app itself on the first coding prompt (electron/main.ts).
 cd "$(dirname "$0")" || exit 1
 
@@ -19,11 +19,47 @@ if [ ! -d node_modules/electron/dist ]; then
   echo "[*] First run: installing dependencies..."
   npm install --no-audit --no-fund || { read -r -p "npm install failed. Press Return to close." _; exit 1; }
 fi
+
+# Launched from the ~/Applications app (scripts/mac/install-shortcuts.sh) there is no Terminal: the
+# output goes to its log and stdin is /dev/null, so a long update or a failure would be invisible.
+# Those say so in a notification (the text goes in as an argument, never parsed as AppleScript).
+launch_log="~/Library/Logs/StrataCode/launch.log"
+notify() {
+  [ -t 1 ] && return 0
+  osascript -e 'on run argv' -e 'display notification (item 1 of argv) with title "Strata Code"' -e 'end run' "$1" >/dev/null 2>&1 || true
+}
+
+# An instance of this checkout already running: installing or building now would change the files
+# under it (vite empties dist/ beneath the live renderer), and this launch only focuses its window
+# (single-instance lock). Both wait for the next launch. `electron .` (node_modules/electron/cli.js)
+# spawns the bundle's binary by its real path with the app folder as argument; the helper processes
+# run from elsewhere in the bundle.
+electron_bin="$(pwd -P)/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
+running=0
+pgrep -f "^$(printf '%s' "$electron_bin" | sed 's/[][\.*^$+?(){}|]/\\&/g')( |\$)" >/dev/null 2>&1 && running=1
+[ "$running" = 1 ] && echo "[*] Strata Code is already running: no install or build now."
+
+# package.json or its lock changed (a `git pull`): install again, then build. npm records an install
+# in node_modules/.package-lock.json but leaves that file alone when nothing changed, so it is
+# touched here to date this one.
+reinstalled=0
+if [ "$running" = 0 ] && [ -d node_modules ] && { [ package.json -nt node_modules/.package-lock.json ] || [ package-lock.json -nt node_modules/.package-lock.json ]; }; then
+  echo "[*] Dependencies changed: installing..."
+  notify "Installing updated dependencies (a minute or two)"
+  npm install --no-audit --no-fund || { notify "npm install failed. Details: $launch_log"; read -r -p "npm install failed. Press Return to close." _; exit 1; }
+  touch node_modules/.package-lock.json; reinstalled=1
+fi
 # Build on the first run, and again whenever the sources are newer than the build (after a
 # `git pull`), so the app never runs yesterday's code.
-if [ ! -f dist-electron/main.js ] || [ -n "$(find electron src index.html package.json vite.config.ts -newer dist-electron/main.js 2>/dev/null | head -1)" ]; then
+if [ "$running" = 0 ] && { [ "$reinstalled" = 1 ] || [ ! -f dist-electron/main.js ] || [ -n "$(find electron src index.html package.json vite.config.ts -newer dist-electron/main.js 2>/dev/null | head -1)" ]; }; then
   echo "[*] Building..."
-  npm run build || { read -r -p "npm run build failed. Press Return to close." _; exit 1; }
+  notify "Updating after a code change (about a minute)"
+  if ! npm run build; then
+    # New code that does not build still leaves the previous build: start that rather than nothing.
+    [ -f dist-electron/main.js ] || { notify "npm run build failed. Details: $launch_log"; read -r -p "npm run build failed. Press Return to close." _; exit 1; }
+    echo "[!] npm run build failed; starting the previous build."
+    notify "The update did not build; starting the previous version. Details: $launch_log"
+  fi
 fi
 
 # Ollama daemon (cheap; loads no model). Ollama.app users already have it running.
