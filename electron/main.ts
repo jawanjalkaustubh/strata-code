@@ -354,7 +354,7 @@ function createWindow() {
       // agent streaming for minutes at a time, alt-tabbing away froze the token
       // stream and the elapsed-time counter until the window regained focus.
       // macOS switches throttling off only while a run is active (holdForRun / releaseForRun).
-      backgroundThrottling: IS_MAC && runHolds === 0,
+      backgroundThrottling: IS_MAC && !runHeld,
       // Renderer never touches Node APIs directly - everything goes through the
       // contextBridge in preload.cjs - so the OS sandbox can stay on.
       sandbox: true
@@ -1201,20 +1201,42 @@ ipcMain.handle('legal:decline', async () => {
  * when the Mac idle-sleeps (the default is after a few minutes) and App Nap leaves the app
  * alone, and renderer timers run at full rate while the window is behind another app. Between
  * runs Chromium's background throttling is back on, so an idle window costs nothing.
- * Counted: a new run starts before the aborted one has finished.
+ * Counted: a new run starts before the aborted one has finished. A run waiting for a tool
+ * approval (Review Mode) does not count: that wait has no time limit, and a run left on it kept
+ * the Mac awake indefinitely. Tool calls run one at a time, so a run waits for at most one
+ * approval and the hold is on exactly while some run is not waiting. Derived from the two
+ * counts, never toggled per event, so no order of events can release it twice or leak it.
  */
-let runHolds = 0;
+let runsInFlight = 0;
+let runsAwaitingApproval = 0;
+let runHeld = false;
 let powerBlockerId: number | null = null;
+function syncRunHold(): void {
+  const want = IS_MAC && runsInFlight > runsAwaitingApproval;
+  if (want === runHeld) return;
+  runHeld = want;
+  if (want) {
+    try { powerBlockerId = powerSaveBlocker.start('prevent-app-suspension'); } catch {}
+    try { mainWindow?.webContents.setBackgroundThrottling(false); } catch {}
+  } else {
+    if (powerBlockerId !== null) { try { powerSaveBlocker.stop(powerBlockerId); } catch {} powerBlockerId = null; }
+    try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.setBackgroundThrottling(true); } catch {}
+  }
+}
 function holdForRun(): void {
-  if (!IS_MAC || runHolds++ > 0) return;
-  try { powerBlockerId = powerSaveBlocker.start('prevent-app-suspension'); } catch {}
-  try { mainWindow?.webContents.setBackgroundThrottling(false); } catch {}
+  runsInFlight++;
+  syncRunHold();
 }
 function releaseForRun(): void {
-  if (!IS_MAC || runHolds === 0 || --runHolds > 0) return;
-  if (powerBlockerId !== null) { try { powerSaveBlocker.stop(powerBlockerId); } catch {} powerBlockerId = null; }
-  try { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.setBackgroundThrottling(true); } catch {}
+  runsInFlight = Math.max(0, runsInFlight - 1);
+  syncRunHold();
 }
+// Each approval wait, reported when it starts and when it settles: answered, rejected or cut
+// short by stop(). The settling call comes before the run can go on, so before its release.
+agent.onApprovalWait = (waiting) => {
+  runsAwaitingApproval = Math.max(0, runsAwaitingApproval + (waiting ? 1 : -1));
+  syncRunHold();
+};
 
 ipcMain.handle('agent:start', async (_e, prompt: string, model: string, autoMode: boolean, taskMode: string = 'coding', editorContext?: any, images?: string[]) => {
   const legal = agreementState();

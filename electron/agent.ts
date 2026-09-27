@@ -139,6 +139,8 @@ export class AgentEngine {
   onCoderNeeded?: (reason: string) => Promise<boolean>;
   /** Set by main.ts: pid of the coder process this app spawned, if it is alive. */
   coderChildPid?: () => number | null;
+  /** Set by main.ts: true when a run starts waiting for a tool approval, false once that approval settles (answer or stop()). */
+  onApprovalWait?: (waiting: boolean) => void;
 
   /** Runs in flight (a new run aborts the previous one, so this is briefly 2). */
   private activeRuns = 0;
@@ -2367,9 +2369,11 @@ WORKING METHOD (follow exactly):
       // If NOT auto mode, prompt user for approval
       if (!autoMode) {
         this.send('agent:status', { state: 'waiting_approval' });
+        // No time limit on this wait, so main.ts drops the macOS run hold meanwhile.
+        this.onApprovalWait?.(true);
         const approved = await new Promise<boolean>((resolve) => {
           this.pendingApprovals.set(callId, resolve);
-        });
+        }).finally(() => this.onApprovalWait?.(false));
 
         if (!approved) {
           this.history.push({
