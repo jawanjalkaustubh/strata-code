@@ -33,10 +33,11 @@ notify() {
 # under it (vite empties dist/ beneath the live renderer), and this launch only focuses its window
 # (single-instance lock). Both wait for the next launch. `electron .` (node_modules/electron/cli.js)
 # spawns the bundle's binary by its real path with the app folder as argument; the helper processes
-# run from elsewhere in the bundle.
+# run from elsewhere in the bundle. -a: pgrep otherwise skips its own ancestors, and this script may
+# run inside the app it would rebuild (its Terminal drawer, or the agent's run_command).
 electron_bin="$(pwd -P)/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
 running=0
-pgrep -f "^$(printf '%s' "$electron_bin" | sed 's/[][\.*^$+?(){}|]/\\&/g')( |\$)" >/dev/null 2>&1 && running=1
+pgrep -af "^$(printf '%s' "$electron_bin" | sed 's/[][\.*^$+?(){}|]/\\&/g')( |\$)" >/dev/null 2>&1 && running=1
 [ "$running" = 1 ] && echo "[*] Strata Code is already running: no install or build now."
 
 # package.json or its lock changed (a `git pull`): install again, then build. npm records an install
