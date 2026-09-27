@@ -720,6 +720,9 @@ if (!app.requestSingleInstanceLock()) {
     }
 
     app.on('activate', () => {
+      // Closing the window quits through before-quit's windowless shutdown (up to 5 s); a Dock
+      // click then must not open a window that the final app.quit() closes without a prompt.
+      if (quitting) return;
       if (BrowserWindow.getAllWindows().length === 0) void createWindow();
     });
   }).catch((err: any) => {
